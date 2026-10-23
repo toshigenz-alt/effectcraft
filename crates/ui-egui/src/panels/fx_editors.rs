@@ -1234,8 +1234,11 @@ fn liquify_buttons(
     rresp.on_hover_text(relax_hint);
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.relax"), b2, "Relax");
     if widgets::text_button(ui, b3, "Clear", false, &t, egui::Id::new(("liquify-clear", euid))).clicked() && !strokes.is_empty() {
-        let cleared = if dm_animated { "clear".to_string() } else { String::new() };
-        set_str(actions, layer, g, "distortionMesh", cleared, None);
+        if dm_animated {
+            set_str(actions, layer, g, "distortionMesh", "clear".to_string(), None);
+        } else {
+            actions.push(("liquify.clear".into(), json!({"layer": layer.id.0, "effect": euid})));
+        }
     }
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.clear"), b3, "Clear");
     let y2 = r.min.y + 28.0;

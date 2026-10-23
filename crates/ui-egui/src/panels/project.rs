@@ -486,8 +486,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if hr.width() <= 0.0 {
             continue;
         }
-        let sort_rect =
-            if *key == "label" { hr.intersect(hdr) } else { Rect::from_min_max(hr.min, pos2((hr.max.x - 5.0).max(hr.min.x), hr.max.y)).intersect(hdr) };
+        let sort_rect = if *key == "label" {
+            Rect::from_min_max(pos2((hr.min.x + 6.0).min(hr.max.x), hr.min.y), hr.max).intersect(hdr)
+        } else {
+            Rect::from_min_max(hr.min, pos2((hr.max.x - 5.0).max(hr.min.x), hr.max.y)).intersect(hdr)
+        };
         let resp = ui.interact(sort_rect, egui::Id::new(("proj-sort", *key)), Sense::click());
         hp.with_clip_rect(hr).text(pos2(*x, hdr.center().y), Align2::LEFT_CENTER, *label, Tokens::ui(11.0), if resp.hovered() { t.text } else { t.text_dim });
         if *key == "label" {
@@ -517,6 +520,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let (lo, hi) = if *key == "name" { (90.0, max_name_w) } else { (44.0, 600.0) };
                     app.ui.project_col_widths.insert((*key).to_string(), (cur + dresp.drag_delta().x).clamp(lo, hi));
                 }
+                app.auto.add(&format!("project.header.{key}.resize"), div_rect, "Resize column");
             }
         }
         app.auto.add(&format!("project.sort.{key}"), hr, if label.is_empty() { "Label" } else { label });

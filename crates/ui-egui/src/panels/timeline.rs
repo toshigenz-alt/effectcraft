@@ -4556,7 +4556,7 @@ mod tests {
         assert!(set_column(tl, "name", false).is_err());
         assert!(set_column(tl, "bogus", true).is_err());
         let vis = Vis::of(tl);
-        let cw = cols(0.0, 1400.0, vis);
+        let cw = cols(0.0, 1400.0, vis, tl);
         // Hidden columns take no room; visible ones are in After Effects' order.
         assert_eq!(cw.keys, cw.label);
         assert_eq!(cw.label, cw.num);
@@ -4564,6 +4564,11 @@ mod tests {
         assert_eq!(column_at(&cw, cw.comment + 5.0), Some("comment"));
         assert_eq!(column_at(&cw, cw.name + 5.0), Some("name"));
         assert_eq!(column_at(&cw, cw.stretch + 5.0), Some("stretch"));
+        // Custom column widths widen the column and shift subsequent columns right.
+        tl.col_widths.insert("comment".into(), 240.0);
+        let cw2 = cols(0.0, 1400.0, vis, tl);
+        assert_eq!(cw2.comment_w, 240.0);
+        assert!(cw2.comment < cw.comment);
         // Through the command (as agents do).
         let ctx = egui::Context::default();
         let r = crate::menus::invoke(&mut app, &ctx, "timeline.column", json!({"column": "duration"})).unwrap();
@@ -4842,5 +4847,40 @@ mod tests {
         assert!(bar.r() < red.r() && bar.r() > bar.g() + 30 && bar.g() >= red.g().min(0x3a) - 1);
         let sel = bar_color(red, true);
         assert!(sel.r() > bar.r());
+    }
+
+    #[test]
+    fn dragging_column_and_split_dividers_resizes_timeline_and_project_columns() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens, crate::i18n::language(&app));
+        let tl_rect = Rect::from_min_size(pos2(0.0, 400.0), vec2(1200.0, 300.0));
+        let pr_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 380.0));
+        let step = |app: &mut EffectcraftApp, events: Vec<egui::Event>| {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 720.0))), events, ..Default::default() };
+            ctx.run_ui(raw, |ui| {
+                app.auto.begin_frame();
+                crate::panels::project::show(app, ui, pr_rect);
+                show(app, ui, tl_rect);
+            })
+            .textures_delta
+            .clear();
+        };
+        step(&mut app, vec![]);
+        let drag = |app: &mut EffectcraftApp, id: &str, dx: f32| {
+            let e = app.auto.find(id).unwrap_or_else(|| panic!("missing {id}"));
+            let p0 = pos2(e.rect[0] + e.rect[2] * 0.5, e.rect[1] + e.rect[3] * 0.5);
+            let p1 = pos2(p0.x + dx, p0.y);
+            step(app, vec![egui::Event::PointerMoved(p0)]);
+            step(app, vec![egui::Event::PointerButton { pos: p0, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+            step(app, vec![egui::Event::PointerMoved(p1)]);
+            step(app, vec![egui::Event::PointerButton { pos: p1, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        };
+        drag(&mut app, "timeline.header.name.resize", 50.0);
+        assert!(app.ui.timeline.col_widths.get("name").copied().unwrap_or(0.0) > 190.0);
+        drag(&mut app, "timeline.header.split", 80.0);
+        assert!(app.ui.timeline.custom_left_w.is_some());
+        drag(&mut app, "project.header.name.resize", 40.0);
+        assert!(app.ui.project_col_widths.get("name").copied().unwrap_or(0.0) > 200.0, "{:?}", app.ui.project_col_widths);
     }
 }

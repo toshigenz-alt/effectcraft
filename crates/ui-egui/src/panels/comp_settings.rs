@@ -177,7 +177,18 @@ fn timecode_field(
     let base = format!("Base {}{}", rate.timecode_base(), if df { "drop" } else { "" });
     let info = if *show_frames { format!("frames (is {tc_shown})  {base}") } else { format!("is {shown}  {base}") };
     let lbl = ui.add(egui::Label::new(egui::RichText::new(info).color(Color32::GRAY)).sense(egui::Sense::click()));
-    let cmd_clicked = ui.input(|i| i.modifiers.command && i.pointer.primary_clicked()) && (r.hovered() || r.clicked() || lbl.hovered() || lbl.clicked());
+    let cmd_down = ui.input(|i| {
+        i.modifiers.command
+            || i.modifiers.ctrl
+            || i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { modifiers, .. } if modifiers.command || modifiers.ctrl))
+    });
+    let hit = |p: egui::Pos2| r.rect.contains(p) || lbl.rect.contains(p);
+    let ptr_clicked = ui.input(|i| {
+        (i.pointer.primary_clicked() || i.pointer.primary_released())
+            && i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()).is_some_and(hit)
+            && i.pointer.press_origin().is_none_or(hit)
+    });
+    let cmd_clicked = cmd_down && (r.clicked() || lbl.clicked() || ptr_clicked);
     if cmd_clicked {
         *show_frames = !*show_frames;
         *toggled = true;
@@ -539,5 +550,48 @@ mod tests {
     fn presets_resolve_by_value() {
         let p = PRESETS.iter().find(|p| p.0 == "HDTV 1080 29.97").unwrap();
         assert_eq!((p.1, p.2), (1920, 1080));
+    }
+
+    #[test]
+    fn ctrl_clicking_timecode_or_duration_toggles_frames_display() {
+        use effectcraft_engine::project::TimeDisplayStyle;
+        let mut app = crate::EffectcraftApp::new(effectcraft_engine::Session::default());
+        app.session.execute("comp.new", json!({"name": "Main", "width": 1920, "height": 1080, "frameRate": 25, "duration": 4})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens, crate::i18n::language(&app));
+        crate::menus::invoke(&mut app, &ctx, "comp.settings", json!({})).unwrap();
+        assert!(!app.dialog_state.comp.show_frames);
+        let run = |app: &mut crate::EffectcraftApp, events: Vec<egui::Event>| {
+            let raw =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 900.0))), events, ..Default::default() };
+            ctx.run_ui(raw, |ui| {
+                app.auto.begin_frame();
+                crate::panels::dialogs::show(app, ui.ctx());
+            })
+            .textures_delta
+            .clear();
+        };
+        for _ in 0..3 {
+            run(&mut app, vec![]);
+        }
+        let er = app.auto.find("dialog.comp.startTimecode").expect("dialog.comp.startTimecode").rect;
+        let p = egui::pos2(er[0] + er[2] * 0.5, er[1] + er[3] * 0.5);
+        let mods = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        run(&mut app, vec![egui::Event::PointerMoved(p)]);
+        run(&mut app, vec![egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: mods }]);
+        run(&mut app, vec![egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: mods }]);
+        assert!(app.dialog_state.comp.show_frames);
+        assert_eq!(app.session.project.settings.time_display, TimeDisplayStyle::Frames);
+
+        for _ in 0..2 {
+            run(&mut app, vec![]);
+        }
+        let d = app.auto.find("dialog.comp.duration").expect("dialog.comp.duration");
+        let pd = egui::pos2(d.rect[0] + d.rect[2] * 0.5, d.rect[1] + d.rect[3] * 0.5);
+        run(&mut app, vec![egui::Event::PointerMoved(pd)]);
+        run(&mut app, vec![egui::Event::PointerButton { pos: pd, button: egui::PointerButton::Primary, pressed: true, modifiers: mods }]);
+        run(&mut app, vec![egui::Event::PointerButton { pos: pd, button: egui::PointerButton::Primary, pressed: false, modifiers: mods }]);
+        assert!(!app.dialog_state.comp.show_frames);
+        assert_eq!(app.session.project.settings.time_display, TimeDisplayStyle::Timecode);
     }
 }

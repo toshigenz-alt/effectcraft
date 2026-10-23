@@ -31,6 +31,15 @@ struct Snapshot {
     /// Floating groups in their own native window (absent from files of earlier versions).
     #[serde(default)]
     panel_windows: Vec<PanelWindow>,
+    /// User-resized Timeline column widths.
+    #[serde(default)]
+    timeline_col_widths: BTreeMap<String, f32>,
+    /// User-resized Timeline outline pane width.
+    #[serde(default)]
+    timeline_left_w: Option<f32>,
+    /// User-resized Project panel column widths.
+    #[serde(default)]
+    project_col_widths: BTreeMap<String, f32>,
 }
 
 impl Snapshot {
@@ -45,6 +54,9 @@ impl Snapshot {
             saved_workspaces: ui.saved_workspaces.clone(),
             saved_floating: ui.saved_floating.clone(),
             panel_windows: ui.panel_windows.clone(),
+            timeline_col_widths: ui.timeline.col_widths.clone(),
+            timeline_left_w: ui.timeline.custom_left_w,
+            project_col_widths: ui.project_col_widths.clone(),
         }
     }
 
@@ -56,6 +68,9 @@ impl Snapshot {
         ui.maximized = self.maximized;
         ui.saved_workspaces = self.saved_workspaces;
         ui.saved_floating = self.saved_floating;
+        ui.timeline.col_widths = self.timeline_col_widths;
+        ui.timeline.custom_left_w = self.timeline_left_w;
+        ui.project_col_widths = self.project_col_widths;
         // A window is only kept for a panel that still floats, and only where a window can be.
         let floating = |panel: PanelKind| ui.floating.iter().any(|group| group.panels.contains(&panel));
         ui.panel_windows = self
@@ -148,6 +163,11 @@ impl Snapshot {
         }
         if self.panel_windows.len() > MAX_PANELS || self.panel_windows.iter().any(|w| !w.rect.iter().all(|v| v.is_finite())) {
             return Err("invalid workspace panel windows".into());
+        }
+        if self.timeline_left_w.is_some_and(|w| !w.is_finite() || !(0.0..=MAX_COORD).contains(&w))
+            || self.timeline_col_widths.values().chain(self.project_col_widths.values()).any(|w| !w.is_finite() || !(0.0..=MAX_COORD).contains(w))
+        {
+            return Err("invalid workspace column width".into());
         }
         for groups in std::iter::once(&self.floating).chain(self.saved_floating.values()) {
             if groups.len() > MAX_PANELS {
@@ -245,6 +265,9 @@ impl WorkspaceStore {
             || self.saved.saved_workspaces != ui.saved_workspaces
             || self.saved.saved_floating != ui.saved_floating
             || self.saved.panel_windows != ui.panel_windows
+            || self.saved.timeline_col_widths != ui.timeline.col_widths
+            || self.saved.timeline_left_w != ui.timeline.custom_left_w
+            || self.saved.project_col_widths != ui.project_col_widths
     }
 
     pub(crate) fn save(&mut self, config: Option<&dyn ConfigStore>, ui: &UiState) -> Result<bool, String> {
@@ -379,6 +402,29 @@ mod tests {
         WorkspaceStore::load(Some(&config), &mut restored);
         assert_eq!(Snapshot::capture(&restored), Snapshot::capture(&ui));
         assert!(restored.project_search.is_empty());
+    }
+
+    #[test]
+    fn column_and_split_widths_roundtrip_and_reject_non_finite_values() {
+        let config = MemoryConfig::default();
+        let mut ui = UiState::default();
+        let mut store = WorkspaceStore::load(Some(&config), &mut ui);
+        ui.timeline.col_widths.insert("name".into(), 280.0);
+        ui.timeline.custom_left_w = Some(620.0);
+        ui.project_col_widths.insert("name".into(), 220.0);
+        assert!(store.has_changes(&ui));
+        assert!(store.save(Some(&config), &ui).unwrap());
+
+        let mut restored = UiState::default();
+        let loaded = WorkspaceStore::load(Some(&config), &mut restored);
+        assert!(loaded.error.is_none());
+        assert_eq!(restored.timeline.col_widths.get("name"), Some(&280.0));
+        assert_eq!(restored.timeline.custom_left_w, Some(620.0));
+        assert_eq!(restored.project_col_widths.get("name"), Some(&220.0));
+
+        let mut bad = Snapshot::capture(&restored);
+        bad.timeline_left_w = Some(f32::NAN);
+        assert!(bad.validate().is_err());
     }
 
     #[test]

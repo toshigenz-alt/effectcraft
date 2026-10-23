@@ -1023,6 +1023,36 @@ mod tests {
         assert!(app.dialog.is_none(), "one Enter confirms");
     }
 
+    /// Interpret Footage opens with `frameRate` ("Assume this frame rate") focused and selected
+    /// even though `matteColor` appears above it in the form.
+    #[test]
+    fn interpret_footage_opens_with_frame_rate_selected() {
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens, crate::i18n::language(&app));
+        app.dialog_state.form = Form {
+            title: "Interpret Footage".into(),
+            command: "file.interpretFootage".into(),
+            base: json!({}),
+            fields: vec![Field::text("matteColor", "Matte color (premultiplied)", "#000000"), Field::num("frameRate", "Assume this frame rate", 30.0)],
+        };
+        app.dialog = Some(Dialog::Form);
+        let frame = |app: &mut EffectcraftApp, events: Vec<egui::Event>| {
+            let raw = egui::RawInput { events, ..Default::default() };
+            ctx.run_ui(raw, |ui| {
+                app.auto.begin_frame();
+                crate::panels::dialogs::show(app, ui.ctx());
+            })
+            .textures_delta
+            .clear();
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![egui::Event::Text("24".into())]);
+        assert_eq!(app.dialog_state.form.params()["matteColor"], json!("#000000"));
+        assert_eq!(app.dialog_state.form.params()["frameRate"], json!(24.0));
+    }
+
     /// File ▸ Export ▸ Adobe Premiere Pro Project… opens a form that says it writes Final Cut Pro
     /// XML; its fields register automation ids and OK runs `file.exportTimeline`.
     #[test]

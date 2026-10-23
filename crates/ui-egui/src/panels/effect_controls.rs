@@ -1570,7 +1570,7 @@ pub fn viewer_hook(
             // Effect points and the keyer's input are in effect space.
             let m = super::viewer::from_effect_space(ectx, &layer, l2c(ectx, &layer));
             if let Some(fx) = crypto_fx {
-                if let Some(lp) = fw::comp_to_layer(&l2c(ectx, &layer), c) {
+                if let Some(lp) = fw::comp_to_layer(&m, c) {
                     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
                     let mode = if alt {
                         "remove"

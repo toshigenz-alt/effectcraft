@@ -743,7 +743,6 @@ Layer
   ---
   Open Layer | layer.openLayer
   Open Layer Source | layer.openSource
-  Replace Source | layer.replaceSource
   Reveal in Finder | layer.revealInFinder
   ---
   Mask
