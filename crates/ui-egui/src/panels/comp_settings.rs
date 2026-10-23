@@ -98,6 +98,7 @@ pub struct CompDraft {
     /// Timecode text being edited (start, duration).
     pub start_tc: Option<String>,
     pub dur_tc: Option<String>,
+    pub show_frames: bool,
     /// The name being typed for Save Preset (the name row shows while `Some`).
     pub preset_name: Option<String>,
 }
@@ -125,6 +126,7 @@ impl Default for CompDraft {
             tab: Tab::Basic,
             start_tc: None,
             dur_tc: None,
+            show_frames: false,
             preset_name: None,
         }
     }
@@ -156,23 +158,44 @@ fn ae_timecode(smpte: &str) -> String {
     format!("{}{rest}", if neg { "-" } else { "" })
 }
 
-fn timecode_field(ui: &mut egui::Ui, buf: &mut Option<String>, secs: &mut f64, rate: FrameRate, min_frames: i64) -> egui::Response {
+fn timecode_field(
+    ui: &mut egui::Ui,
+    buf: &mut Option<String>,
+    secs: &mut f64,
+    rate: FrameRate,
+    min_frames: i64,
+    show_frames: &mut bool,
+    toggled: &mut bool,
+) -> egui::Response {
     let df = rate.supports_drop_frame();
+    let frames = (*secs * rate.as_f64()).round() as i64;
     // Durations are whole frames in AE: 10 s at 29.97 fps is 0;00;10;00, not 9;29.
-    let shown = ae_timecode(&format_timecode_frames((*secs * rate.as_f64()).round() as i64, rate, df));
+    let tc_shown = ae_timecode(&format_timecode_frames(frames, rate, df));
+    let shown = if *show_frames { format!("{frames:05}") } else { tc_shown.clone() };
     let mut text = buf.clone().unwrap_or_else(|| shown.clone());
     let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(96.0).font(Tokens::mono(12.0)));
+    let base = format!("Base {}{}", rate.timecode_base(), if df { "drop" } else { "" });
+    let info = if *show_frames { format!("frames (is {tc_shown})  {base}") } else { format!("is {shown}  {base}") };
+    let lbl = ui.add(egui::Label::new(egui::RichText::new(info).color(Color32::GRAY)).sense(egui::Sense::click()));
+    let cmd_clicked = ui.input(|i| i.modifiers.command && i.pointer.primary_clicked()) && (r.hovered() || r.clicked() || lbl.hovered() || lbl.clicked());
+    if cmd_clicked {
+        *show_frames = !*show_frames;
+        *toggled = true;
+        *buf = None;
+        r.surrender_focus();
+        return r;
+    }
     if r.changed() {
         *buf = Some(text.clone());
     }
     if r.lost_focus() {
-        if let Ok(f) = parse_timecode(&text, rate, df, 0) {
+        let parsed =
+            if *show_frames && !text.contains([':', ';', '.', ',']) { text.trim().parse::<i64>().ok() } else { parse_timecode(&text, rate, df, 0).ok() };
+        if let Some(f) = parsed {
             *secs = rate.tick_of(f.max(min_frames)).seconds();
         }
         *buf = None;
     }
-    let base = format!("Base {}{}", rate.timecode_base(), if df { "drop" } else { "" });
-    ui.label(egui::RichText::new(format!("is {shown}  {base}")).color(Color32::GRAY));
     r
 }
 
@@ -380,13 +403,20 @@ pub fn show(
                 let mb = d.width as f64 * d.height as f64 * 4.0 / (1024.0 * 1024.0);
                 ui.label(egui::RichText::new(tr_args("{} x {}, {}MB per 8bpc frame", &[&d.width, &d.height, &format!("{mb:.1}")])).color(Color32::GRAY));
                 ui.end_row();
-                ui.label(tr("Start Timecode:"));
-                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.start_tc, &mut d.start, rate, i64::MIN / 4)).inner;
+                let mut toggled = false;
+                let start_lbl = if d.show_frames { "Start Frame:" } else { "Start Timecode:" };
+                ui.label(tr(start_lbl));
+                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.start_tc, &mut d.start, rate, i64::MIN / 4, &mut d.show_frames, &mut toggled)).inner;
                 auto.add("dialog.comp.startTimecode", r.rect, "Start Timecode");
                 ui.end_row();
                 ui.label(tr("Duration:"));
-                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.dur_tc, &mut d.duration, rate, 1)).inner;
+                let r = ui.horizontal(|ui| timecode_field(ui, &mut d.dur_tc, &mut d.duration, rate, 1, &mut d.show_frames, &mut toggled)).inner;
                 auto.add("dialog.comp.duration", r.rect, "Duration");
+                if toggled {
+                    d.start_tc = None;
+                    d.dur_tc = None;
+                    cmds.push(("file.projectSettings", json!({"timeDisplay": if d.show_frames { "frames" } else { "timecode" }})));
+                }
                 ui.end_row();
                 ui.label(tr("Background Color:"));
                 ui.horizontal(|ui| {

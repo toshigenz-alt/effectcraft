@@ -72,8 +72,9 @@ pub struct DialogState {
 pub fn open_new_comp(app: &mut EffectcraftApp) {
     let n = app.session.project.comps().count() + 1;
     let last = app.dialog_state.last_new_comp.clone().unwrap_or_default();
+    let show_frames = app.session.project.settings.time_display == effectcraft_engine::project::TimeDisplayStyle::Frames;
     app.dialog_state.comp =
-        CompDraft { name: format!("Comp {n}"), tab: super::comp_settings::Tab::Basic, start_tc: None, dur_tc: None, preset_name: None, ..last };
+        CompDraft { name: format!("Comp {n}"), tab: super::comp_settings::Tab::Basic, start_tc: None, dur_tc: None, show_frames, preset_name: None, ..last };
     app.dialog_state.editing_existing = false;
     app.dialog = Some(Dialog::NewComp);
 }
@@ -86,6 +87,7 @@ pub fn open_comp_settings(app: &mut EffectcraftApp) -> Result<(), String> {
 /// Composition Settings on `cid`, open in the viewer or not.
 pub fn open_comp_settings_for(app: &mut EffectcraftApp, cid: ItemId) -> Result<(), String> {
     let c = app.session.project.comp(cid).ok_or("no composition")?;
+    let show_frames = app.session.project.settings.time_display == effectcraft_engine::project::TimeDisplayStyle::Frames;
     app.dialog_state.comp = CompDraft {
         name: app.session.project.item(cid).map(|i| i.name.clone()).unwrap_or_default(),
         width: c.width,
@@ -102,6 +104,7 @@ pub fn open_comp_settings_for(app: &mut EffectcraftApp, cid: ItemId) -> Result<(
         preserve_frame_rate: c.preserve_frame_rate,
         preserve_resolution: c.preserve_resolution,
         advanced_3d: c.renderer == effectcraft_engine::project::Renderer::Advanced3D,
+        show_frames,
         ..Default::default()
     };
     app.dialog_state.editing_existing = true;

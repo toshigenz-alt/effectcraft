@@ -192,10 +192,14 @@ pub(crate) fn toggle_pick(app: &mut EffectcraftApp, kind: &str, layer: &Layer, p
     let pick = FxPick { kind: kind.into(), layer: layer.id.0, prop: prop.uid, name: prop.name.clone() };
     if app.ui.fx_pick.as_ref() == Some(&pick) {
         app.ui.fx_pick = None;
+        app.ui.status.clear();
     } else {
         app.ui.fx_pick = Some(pick);
         app.ui.text_color_pick = None;
-        app.ui.status = if kind == "point" {
+        app.ui.fx_liquify_brush.clear();
+        app.ui.status = if kind == "cryptomatte" {
+            "Click in Composition: replace ID · Shift+click: add · Alt+click: remove (click eyedropper or Esc to finish)".into()
+        } else if kind == "point" {
             format!("Click in the Composition panel to set {}", prop.name)
         } else {
             format!("Click in the Composition panel to sample {}", prop.name)
@@ -227,7 +231,7 @@ fn prop_row(
         actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "add": add})));
     }
     let swr = Rect::from_center_size(pos2(r.min.x + indent, cy), vec2(14.0, 14.0));
-    if !prop.static_only && !matches!(prop.ui, ParamUi::Hidden) {
+    if !prop.static_only && (!matches!(prop.ui, ParamUi::Hidden) || super::fx_editors::is_liquify_mesh(&group.match_id, prop)) {
         let resp = ui.interact(swr, egui::Id::new(("ec-sw", uid)), Sense::click());
         icons::paint(
             p,
@@ -475,6 +479,16 @@ fn prop_row(
             let dr = Rect::from_min_size(pos2(vx, cy - 9.0), vec2((r.max.x - vx - 56.0).clamp(80.0, 200.0), 18.0));
             super::fx_editors::channel_popup(app, ui, layer, prop, s, dr, actions);
         }
+        Value::Str(s) if super::fx_editors::is_liquify_mesh(&group.match_id, prop) => {
+            let n = effectcraft_engine::effects::distort4::parse_strokes(s).len();
+            let shown = match n {
+                0 => "Undistorted".to_string(),
+                1 => "1 stroke".to_string(),
+                _ => format!("{n} strokes"),
+            };
+            p.text(pos2(vx, cy), Align2::LEFT_CENTER, &shown, Tokens::ui(12.0), if n == 0 { t.text_dim } else { t.text });
+            app.auto.add(&format!("effectControls.prop.{uid}.value"), Rect::from_min_size(pos2(vx, cy - 9.0), vec2(96.0, 18.0)), &shown);
+        }
         // A file parameter (Apply Color LUT's LUT, an OCIO config): its file name and Choose…,
         // as in After Effects.
         Value::Str(s) if matches!(prop.ui, ParamUi::File { .. }) => {
@@ -514,7 +528,20 @@ fn prop_row(
         // A text parameter (Cryptomatte's Selection, Colorama's Output Cycle, config names):
         // typed in a field, set when it loses the focus (Esc keeps the old text).
         Value::Str(s) if matches!(prop.ui, ParamUi::Text) => {
-            let fr = Rect::from_min_size(pos2(vx, cy - 9.0), vec2((r.max.x - vx - 12.0).clamp(80.0, 320.0), 18.0));
+            let is_crypto = group.match_id == "ec.3d.cryptomatte" && prop.match_id == "selection";
+            let tx = if is_crypto {
+                let er = Rect::from_min_size(pos2(vx, cy - 9.0), vec2(18.0, 18.0));
+                let active = app.ui.fx_pick.as_ref().is_some_and(|k| k.prop == uid && k.kind == "cryptomatte");
+                let tip = "Cryptomatte Eyedropper: Click = replace, Shift+click = add, Alt+click = remove";
+                if fw::eyedropper_button(ui, er, active, egui::Id::new(("ec-crypto-eye", uid)), &t).on_hover_text(tip).clicked() {
+                    toggle_pick(app, "cryptomatte", layer, prop);
+                }
+                app.auto.add(&format!("effectControls.prop.{uid}.eyedropper"), er, &prop.name);
+                vx + 22.0
+            } else {
+                vx
+            };
+            let fr = Rect::from_min_size(pos2(tx, cy - 9.0), vec2((r.max.x - tx - 12.0).clamp(80.0, 320.0), 18.0));
             let bid = egui::Id::new(("ec-text", uid));
             let mut buf: String = ui.data(|d| d.get_temp(bid)).unwrap_or_else(|| s.clone());
             let resp = widgets::text_field(ui, fr, &mut buf, "", &t);
@@ -526,6 +553,8 @@ fn prop_row(
                 ui.data_mut(|d| d.remove::<String>(bid));
             } else if resp.has_focus() {
                 ui.data_mut(|d| d.insert_temp(bid, buf));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(bid));
             }
         }
         Value::Gradient(g) => {
@@ -699,7 +728,10 @@ fn group_rows(
         let r = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), ROW));
         match c {
             Node::Prop(pr) => {
-                if matches!(pr.ui, ParamUi::Hidden) || pr.three_d_only && !layer.is_3d() || !fx.shown(layer, ectx, &pr.match_id) {
+                if (matches!(pr.ui, ParamUi::Hidden) && !super::fx_editors::is_liquify_mesh(fx.effect, pr))
+                    || pr.three_d_only && !layer.is_3d()
+                    || !fx.shown(layer, ectx, &pr.match_id)
+                {
                     continue;
                 }
                 *y += ROW;
@@ -862,7 +894,9 @@ fn object_matte_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Pa
 /// Height of the custom editor shown under an effect's header (0 when none).
 fn editor_height(effect: &str, g: &PropGroup, width: f32) -> f32 {
     match effect {
-        super::fx_editors::GLOW | super::fx_editors::RESHAPE | super::fx_editors::EXTRACTOR => super::fx_editors::header_height(effect, g, width),
+        super::fx_editors::GLOW | super::fx_editors::RESHAPE | super::fx_editors::EXTRACTOR | super::fx_editors::LIQUIFY => {
+            super::fx_editors::header_height(effect, g, width)
+        }
         "ec.color.curves" => 34.0 + curves_size(width) + 26.0,
         effectcraft_engine::effects::warp_stab::ID => 50.0,
         effectcraft_engine::effects::camera_tracker::ID => super::camera_tracker_ui::EDITOR_HEIGHT,
@@ -1167,6 +1201,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Clicking empty space deselects the effects.
     let bg = ui.interact(body, egui::Id::new("ec-bg"), Sense::click());
     if bg.clicked() {
+        app.ui.fx_liquify_brush.clear();
+        app.ui.fx_pick = None;
         app.session.state.selected_props.retain(|(l, u)| !(*l == layer.id && fx.iter().any(|g| effect_active(g, layer.id, &[(*l, *u)]))));
     }
     let has_clip = !app.session.state.effect_clipboard.is_empty();
@@ -1274,6 +1310,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         hresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, &shown));
         app.auto.add(&format!("effectControls.effect.{}", g.uid), r, &g.name);
         if hresp.clicked() || hresp.drag_started() || hresp.secondary_clicked() {
+            if !app.ui.fx_liquify_brush.contains(&g.uid) {
+                app.ui.fx_liquify_brush.clear();
+            }
+            app.ui.fx_pick = None;
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             if add && hresp.clicked() {
                 if selected {
@@ -1351,7 +1391,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         effectcraft_engine::effects::roto::ID => roto_editor(app, ui, &bp, &layer, g, er, &mut actions),
                         effectcraft_engine::effects::object_matte::ID => object_matte_editor(app, ui, &bp, &layer, g, er, &mut actions),
                         "ec.color.levels" | "ec.color.levelsic" => levels_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions),
-                        super::fx_editors::GLOW | super::fx_editors::RESHAPE | super::fx_editors::EXTRACTOR => {
+                        super::fx_editors::GLOW | super::fx_editors::RESHAPE | super::fx_editors::EXTRACTOR | super::fx_editors::LIQUIFY => {
                             super::fx_editors::header_editor(app, ui, &bp, &layer, g, effect, &ectx, er, &mut actions)
                         }
                         _ => histogram_only(app, ui, &bp, g, er),
@@ -1485,14 +1525,21 @@ pub fn viewer_hook(
             .flatten()
             .filter(|g| effectcraft_engine::effects::find(&g.match_id).is_some_and(|s| s.category == "Keying"))
             .map(|g| g.uid);
+        let crypto_fx = (pick.kind == "cryptomatte").then(|| layer.effects()?.groups().find(|g| g.find(pick.prop).is_some()).map(|g| g.uid)).flatten();
         if pick.kind == "color" && keyer.is_none() {
             // GPU frames: read the shown frame back for sampling.
             app.viewer_pixels();
         }
         let resp = ui.interact(map.area, egui::Id::new("viewer-fx-pick"), Sense::click());
         app.auto.add("viewer.fxPick", map.area, &pick.name);
-        let hint = if pick.kind == "point" { format!("Click to set {}", pick.name) } else { format!("Click to sample {}", pick.name) };
-        let chip = Rect::from_min_size(map.area.min + vec2(10.0, 10.0), vec2(220.0, 22.0));
+        let (hint, chip_w) = if pick.kind == "cryptomatte" {
+            ("Click: replace ID · Shift+click: add · Alt+click: remove (Esc to finish)".to_string(), 386.0)
+        } else if pick.kind == "point" {
+            (format!("Click to set {}", pick.name), 220.0)
+        } else {
+            (format!("Click to sample {}", pick.name), 220.0)
+        };
+        let chip = Rect::from_min_size(map.area.min + vec2(10.0, 10.0), vec2(chip_w, 22.0));
         painter.rect_filled(chip, 11.0, Color32::from_black_alpha(180));
         painter.text(chip.center(), Align2::CENTER_CENTER, hint, Tokens::ui(11.5), t.text);
         if let Some(hp) = resp.hover_pos() {
@@ -1522,26 +1569,40 @@ pub fn viewer_hook(
             let c = map.to_comp(pos);
             // Effect points and the keyer's input are in effect space.
             let m = super::viewer::from_effect_space(ectx, &layer, l2c(ectx, &layer));
-            if pick.kind == "point" {
-                if let Some(lp) = fw::comp_to_layer(&m, c) {
-                    actions.push(("prop.set".into(), json!({"layer": pick.layer, "prop": pick.prop, "value": [lp[0], lp[1]]})));
+            if let Some(fx) = crypto_fx {
+                if let Some(lp) = fw::comp_to_layer(&l2c(ectx, &layer), c) {
+                    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                    let mode = if alt {
+                        "remove"
+                    } else if shift {
+                        "add"
+                    } else {
+                        "replace"
+                    };
+                    actions.push(("effect.pickCryptomatte".into(), json!({"layer": pick.layer, "effect": fx, "x": lp[0], "y": lp[1], "mode": mode})));
                 }
-            } else if let Some(fx) = keyer {
-                // Ctrl/Cmd+click averages the 5 × 5 pixels around the point.
-                if let Some(lp) = fw::comp_to_layer(&m, c) {
-                    let average = ui.input(|i| i.modifiers.command);
-                    actions.push((
-                        "effect.pickColor".into(),
-                        json!({"layer": pick.layer, "effect": fx, "prop": pick.prop, "x": lp[0], "y": lp[1], "average": average}),
-                    ));
+            } else {
+                if pick.kind == "point" {
+                    if let Some(lp) = fw::comp_to_layer(&m, c) {
+                        actions.push(("prop.set".into(), json!({"layer": pick.layer, "prop": pick.prop, "value": [lp[0], lp[1]]})));
+                    }
+                } else if let Some(fx) = keyer {
+                    // Ctrl/Cmd+click averages the 5 × 5 pixels around the point.
+                    if let Some(lp) = fw::comp_to_layer(&m, c) {
+                        let average = ui.input(|i| i.modifiers.command);
+                        actions.push((
+                            "effect.pickColor".into(),
+                            json!({"layer": pick.layer, "effect": fx, "prop": pick.prop, "x": lp[0], "y": lp[1], "average": average}),
+                        ));
+                    }
+                } else if let Some(img) = &app.viewer_image
+                    && let Some(s) = fw::sample_frame(img, super::viewer_tools::shown_region(&ctx, map.comp), c)
+                {
+                    actions.push(("prop.set".into(), json!({"layer": pick.layer, "prop": pick.prop, "value": [s[0], s[1], s[2], 1.0]})));
                 }
-            } else if let Some(img) = &app.viewer_image
-                && let Some(s) = fw::sample_frame(img, super::viewer_tools::shown_region(&ctx, map.comp), c)
-            {
-                actions.push(("prop.set".into(), json!({"layer": pick.layer, "prop": pick.prop, "value": [s[0], s[1], s[2], 1.0]})));
+                app.ui.fx_pick = None;
+                app.ui.status.clear();
             }
-            app.ui.fx_pick = None;
-            app.ui.status.clear();
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             app.ui.fx_pick = None;
@@ -1611,7 +1672,8 @@ pub fn viewer_hook(
             // Masks are in layer space, effect points in effect space.
             let fm = super::viewer::from_effect_space(ectx, layer, m);
             let picked_prop = point_pick.as_ref().filter(|p| p.layer == layer.id.0).map(|p| p.prop);
-            for g in fx.groups().filter(|g| g.enabled && effect_active(g, layer.id, &sel)) {
+            let liquify_brush = app.ui.fx_liquify_brush.clone();
+            for g in fx.groups().filter(|g| g.enabled && (effect_active(g, layer.id, &sel) || liquify_brush.contains(&g.uid))) {
                 // Puppet owns its pin handles and hit testing. Generic crosshairs would
                 // overlap the pins and steal their selection/rotation/scale gestures.
                 if matches!(&g.kind, GroupKind::Effect { effect } if effect == effectcraft_engine::effects::puppet::ID) {
@@ -1622,6 +1684,12 @@ pub fn viewer_hook(
                 }
                 if !picking && app.ui.viewer.show_layer_controls && matches!(&g.kind, GroupKind::Effect { effect } if effect == super::fx_editors::MESH_WARP) {
                     super::fx_editors::mesh_warp_overlay(app, ui, painter, map, ectx, layer, g, &fm, &mut actions);
+                }
+                if !picking && app.ui.viewer.show_layer_controls && matches!(&g.kind, GroupKind::Effect { effect } if effect == super::fx_editors::LIQUIFY) {
+                    super::fx_editors::liquify_overlay(app, ui, painter, map, ectx, layer, g, &fm, &mut actions);
+                    if app.ui.fx_liquify_brush.contains(&g.uid) {
+                        continue;
+                    }
                 }
                 let scope = FxScope { effect: &g.match_id, root: g, path: String::new() };
                 let mut pts = Vec::new();

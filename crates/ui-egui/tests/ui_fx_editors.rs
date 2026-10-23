@@ -280,6 +280,121 @@ fn mesh_warp_vertices_drag_on_the_viewer() {
     assert!((moved.x - mid.x - 40.0).abs() < 2.0, "the handle follows the vertex: {mid:?} → {moved:?}");
 }
 
+#[test]
+fn liquify_brush_paints_distortion_mesh_on_the_viewer() {
+    let (s0, l, fx) = with_effect("Liquify");
+    let mut h = harness(s0);
+    let pre = format!("effectControls.effect.{fx}.liquify");
+    let dm_uid = group(&h, l, fx).get("distortionMesh").unwrap().uid;
+    rect(&h, &format!("{pre}.brush"));
+    rect(&h, &format!("{pre}.relaxBrush"));
+    rect(&h, &format!("{pre}.relax"));
+    rect(&h, &format!("{pre}.clear"));
+    rect(&h, &format!("{pre}.speed"));
+    rect(&h, &format!("{pre}.interp"));
+    rect(&h, &format!("effectControls.prop.{dm_uid}.stopwatch"));
+    for i in 0..12 {
+        rect(&h, &format!("{pre}.tool.{i}"));
+    }
+    assert!(!h.state().ui.fx_liquify_brush.contains(&fx));
+    // Clicking Relax Brush arms the brush and selects tool #9 (Reconstruction / Relax).
+    click_id(&mut h, &format!("{pre}.relaxBrush"));
+    assert!(h.state().ui.fx_liquify_brush.contains(&fx));
+    assert_eq!(value(&h, l, fx, "tool"), KV::Enum(9));
+    // Clicking a tool button selects that tool and keeps the viewer brush armed.
+    click_id(&mut h, &format!("{pre}.tool.2"));
+    assert!(h.state().ui.fx_liquify_brush.contains(&fx));
+    assert_eq!(value(&h, l, fx, "tool"), KV::Enum(2));
+    // Switch back to Warp via tool.0.
+    click_id(&mut h, &format!("{pre}.tool.0"));
+    assert_eq!(value(&h, l, fx, "tool"), KV::Enum(0));
+    // Arm keyframe animation on Distortion Mesh via its stopwatch at t = 0.
+    click_id(&mut h, &format!("effectControls.prop.{dm_uid}.stopwatch"));
+    assert_eq!(group(&h, l, fx).get("distortionMesh").unwrap().keys.len(), 1);
+    // Advance playhead to t = 1.0s, un-maximize Effect Controls so the Composition viewer is visible, then drag a stroke.
+    h.state_mut().session.execute("time.set", json!({"time": 1.0})).unwrap();
+    h.state_mut().toggle_maximize(PanelKind::EffectControls);
+    for _ in 0..6 {
+        h.step();
+    }
+    let canvas = rect(&h, &format!("viewer.liquify.canvas.{fx}"));
+    // Ctrl + drag horizontally resizes the brush without adding a stroke.
+    let size0 = value(&h, l, fx, "brushSize").as_f64();
+    let c0 = canvas.center();
+    h.event(Event::PointerMoved(c0));
+    h.step();
+    h.event(Event::PointerButton { pos: c0, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::CTRL });
+    h.step();
+    let c1 = c0 + egui::vec2(25.0, 0.0);
+    h.event(Event::PointerMoved(c1));
+    h.step();
+    h.event(Event::PointerButton { pos: c1, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::CTRL });
+    h.run_steps(2);
+    let size1 = value(&h, l, fx, "brushSize").as_f64();
+    assert!((size1 - (size0 + 25.0)).abs() < 1.0, "Ctrl+drag resized brush: {size0} -> {size1}");
+    assert_eq!(group(&h, l, fx).get("distortionMesh").unwrap().keys.len(), 1, "Ctrl+drag did not paint a stroke");
+
+    let undo_len = h.state().session.history.undo.len();
+    drag(&mut h, canvas.center() - egui::vec2(30.0, 0.0), canvas.center() + egui::vec2(30.0, 0.0));
+    let dm_prop = group(&h, l, fx).get("distortionMesh").unwrap().clone();
+    assert_eq!(dm_prop.keys.len(), 2, "two keyframes recorded (t=0 and t=1)");
+    let t1 = effectcraft_engine::time::Tick::from_seconds_f64(1.0);
+    let t_half = effectcraft_engine::time::Tick::from_seconds_f64(0.5);
+    let mesh_t1 = match dm_prop.value_at(t1) {
+        KV::Str(s) => s,
+        other => panic!("{other:?}"),
+    };
+    let strokes = effectcraft_engine::effects::distort4::parse_strokes(&mesh_t1);
+    assert_eq!(strokes.len(), 1, "one stroke recorded: {mesh_t1}");
+    assert_eq!(strokes[0].tool, 0);
+    assert!(strokes[0].points.len() >= 2, "{strokes:?}");
+    assert_eq!(h.state().session.history.undo.len(), undo_len + 1, "one undo step per stroke");
+    // Sampling at t = 0.5 interpolates between the undistorted t = 0 keyframe and the t = 1 stroke.
+    let mesh_mid = match dm_prop.value_at(t_half) {
+        KV::Str(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert!(mesh_mid.starts_with("blend "), "interpolated mesh string: {mesh_mid}");
+    let m1 = effectcraft_engine::effects::distort4::eval_liquify_mesh(&mesh_t1, 320.0, 180.0, &|_, _| false);
+    let m_half = effectcraft_engine::effects::distort4::eval_liquify_mesh(&mesh_mid, 320.0, 180.0, &|_, _| false);
+    let max1 = m1.d.iter().map(|d| d[0].hypot(d[1])).fold(0.0_f64, f64::max);
+    let max_half = m_half.d.iter().map(|d| d[0].hypot(d[1])).fold(0.0_f64, f64::max);
+    assert!(max1 > 1.0 && max_half > 0.0 && max_half < max1, "max1={max1}, max_half={max_half}");
+    // Advance to t = 2.0s and paint a second stroke: passing t = 1.0 (e.g. at t = 1.1s) must NOT snap back to default mesh.
+    h.state_mut().session.execute("time.set", json!({"time": 2.0})).unwrap();
+    h.run_steps(3);
+    drag(&mut h, canvas.center() - egui::vec2(0.0, 25.0), canvas.center() + egui::vec2(0.0, 25.0));
+    let dm_prop3 = group(&h, l, fx).get("distortionMesh").unwrap().clone();
+    assert_eq!(dm_prop3.keys.len(), 3, "three keyframes at t=0, t=1, t=2");
+    let t_after_1 = effectcraft_engine::time::Tick::from_seconds_f64(1.1);
+    let mesh_after_1 = match dm_prop3.value_at(t_after_1) {
+        KV::Str(s) => s,
+        other => panic!("{other:?}"),
+    };
+    let m_after_1 = effectcraft_engine::effects::distort4::eval_liquify_mesh(&mesh_after_1, 320.0, 180.0, &|_, _| false);
+    let max_after_1 = m_after_1.d.iter().map(|d| d[0].hypot(d[1])).fold(0.0_f64, f64::max);
+    assert!(max_after_1 >= max1 * 0.9, "does not snap back to default mesh after keyframe 1: max_after_1={max_after_1}, max1={max1}");
+    // Clicking Relax at t = 2.0s relaxes the mesh toward default.
+    let t2 = effectcraft_engine::time::Tick::from_seconds_f64(2.0);
+    let max2 = effectcraft_engine::effects::distort4::eval_liquify_mesh(&s(dm_prop3.value_at(t2)), 320.0, 180.0, &|_, _| false)
+        .d
+        .iter()
+        .map(|d| d[0].hypot(d[1]))
+        .fold(0.0_f64, f64::max);
+    click_id(&mut h, &format!("{pre}.relax"));
+    let mesh_relaxed = s(group(&h, l, fx).get("distortionMesh").unwrap().value_at(t2));
+    let m_rel = effectcraft_engine::effects::distort4::eval_liquify_mesh(&mesh_relaxed, 320.0, 180.0, &|_, _| false);
+    let max_rel = m_rel.d.iter().map(|d| d[0].hypot(d[1])).fold(0.0_f64, f64::max);
+    assert!(max_rel < max2, "Relax button reduces displacement: {max_rel} < {max2}");
+    // Clear empties the distortion mesh at the current keyframe (writes "clear" when animated so cumulative strokes reset).
+    click_id(&mut h, &format!("{pre}.clear"));
+    let mesh_cleared = s(group(&h, l, fx).get("distortionMesh").unwrap().value_at(t2));
+    assert_eq!(mesh_cleared, "");
+    // Clicking Brush toggles the viewer brush off.
+    click_id(&mut h, &format!("{pre}.brush"));
+    assert!(!h.state().ui.fx_liquify_brush.contains(&fx));
+}
+
 /// UI fixes of M13.10: the Composition / Timeline tabs' close button, swatch and lock; the
 /// Preview panel scrolls in the default workspace (where it shows just the transport).
 #[test]

@@ -273,6 +273,9 @@ impl EffectcraftApp {
                     let _ = self.dock_command(&ctx, Action::SetStackOpen { panel: p, open: !self.ui.dock.is_visible(p) });
                 }
                 DockAction::Focus(p) => {
+                    if !matches!(p, PanelKind::Composition | PanelKind::Viewer(_) | PanelKind::EffectControls) {
+                        self.ui.fx_liquify_brush.clear();
+                    }
                     self.ui.focused = p;
                     panels::viewer_text::panel_clicked(self, &ctx, p);
                     // A click in (or on the tab of) another Composition viewer makes it active.

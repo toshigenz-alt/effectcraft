@@ -13,7 +13,9 @@
 //! - EXtractoR: a Layer popup of the footage's OpenEXR layers, and Red / Green / Blue / Alpha
 //!   popups of its channels ([`channel_popup`]);
 //! - Mesh Warp: on the Composition viewer, the distortion mesh's grid over the layer with a
-//!   draggable handle on every vertex ([`mesh_warp_overlay`], #303).
+//!   draggable handle on every vertex ([`mesh_warp_overlay`], #303);
+//! - Liquify: a Brush toggle, Clear button and tool strip here, and on the Composition viewer a
+//!   brush cursor that paints strokes into the distortion mesh ([`liquify_overlay`]).
 //!
 //! Every edit is a `prop.set` engine command (undoable; one drag = one undo step) and every
 //! handle registers an automation id.
@@ -40,6 +42,7 @@ pub const GLOW: &str = "ec.stylize.glow";
 pub const RESHAPE: &str = "ec.distort.reshape";
 pub const EXTRACTOR: &str = "ec.3d.extractor";
 pub const MESH_WARP: &str = "ec.distort.meshwarp";
+pub const LIQUIFY: &str = "ec.distort.liquify";
 
 fn str_value(layer: &Layer, ectx: &EvalCtx, g: &PropGroup, id: &str) -> String {
     match g.get(id).map(|p| ectx.value(layer, p)) {
@@ -623,6 +626,7 @@ pub fn header_height(effect: &str, g: &PropGroup, width: f32) -> f32 {
         },
         RESHAPE => 50.0,
         EXTRACTOR => 30.0,
+        LIQUIFY => 118.0,
         _ => 0.0,
     }
 }
@@ -643,6 +647,7 @@ pub fn header_editor(
         GLOW => glow_map(app, ui, p, layer, g, ectx, r, actions),
         RESHAPE => reshape_buttons(app, ui, p, layer, g, ectx, r, actions),
         EXTRACTOR => extractor_layers(app, ui, p, layer, g, ectx, r, actions),
+        LIQUIFY => liquify_buttons(app, ui, p, layer, g, ectx, r, actions),
         _ => {}
     }
 }
@@ -1108,6 +1113,367 @@ pub fn mesh_warp_overlay(
             }
             let key = gesture_key(ui, id, resp.drag_started());
             set_str(actions, layer, g, "mesh", format_mesh(&v), Some(key));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Liquify: Effect Controls brush toggle / tool strip and Composition viewer brush overlay
+
+/// Whether `prop` (in effect `effect`) is Liquify's Distortion Mesh, shown in Effect Controls
+/// and the Timeline with a stopwatch and keyframe navigator so the mesh can be animated.
+pub fn is_liquify_mesh(effect: &str, prop: &effectcraft_engine::project::Property) -> bool {
+    effect == LIQUIFY && prop.match_id == "distortionMesh"
+}
+
+/// Relax `strokes` toward undistorted by multiplicative `factor` (0..1): appends or updates a
+/// trailing whole-mesh reconstruction step (`size == 0.0`) and returns `""` once relaxed past 99 %.
+pub fn relax_strokes(mut strokes: Vec<effectcraft_engine::effects::distort4::LiquifyStroke>, factor: f64) -> String {
+    use effectcraft_engine::effects::distort4::LiquifyStroke;
+    if strokes.is_empty() {
+        return String::new();
+    }
+    let factor = factor.clamp(0.0, 1.0);
+    if let Some(last) = strokes.last_mut().filter(|s| s.tool == 9 && s.size <= 0.0) {
+        let rem = (1.0 - last.pressure / 100.0).clamp(0.0, 1.0) * factor;
+        if rem < 0.01 {
+            return String::new();
+        }
+        last.pressure = ((1.0 - rem) * 100.0 * 1000.0).round() / 1000.0;
+    } else {
+        if factor < 0.01 {
+            return String::new();
+        }
+        let pressure = ((1.0 - factor) * 100.0 * 1000.0).round() / 1000.0;
+        strokes.push(LiquifyStroke { tool: 9, size: 0.0, pressure, jitter: 0.0, clone_offset: [0.0; 2], points: vec![[0.0, 0.0]] });
+    }
+    strokes.iter().map(LiquifyStroke::to_line).collect::<Vec<_>>().join("\n")
+}
+
+#[derive(Clone)]
+struct LiquifyHold {
+    base: String,
+    merge: String,
+    points: Vec<[f64; 2]>,
+    accum: f64,
+}
+
+#[derive(Clone, Copy)]
+struct LiquifySizeDrag {
+    origin: Pos2,
+    start_size: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn liquify_buttons(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    g: &PropGroup,
+    ectx: &EvalCtx,
+    r: Rect,
+    actions: &mut Actions,
+) {
+    use effectcraft_engine::effects::distort4::{LIQUIFY_TOOL_LABELS, LIQUIFY_TOOLS, parse_strokes};
+    use effectcraft_engine::keyframe::Interp;
+    const SHORT: [&str; 12] = ["Warp", "Turb", "Twirl ↻", "Twirl ↺", "Pucker", "Bloat", "Shift", "Reflect", "Clone", "Relax", "Freeze", "Thaw"];
+    let t = app.tokens;
+    let euid = g.uid;
+    let active = app.ui.fx_liquify_brush.contains(&euid);
+    let tool = (g.get("tool").map(|pr| ectx.value(layer, pr).as_enum()).unwrap_or(0) as usize).min(LIQUIFY_TOOLS.len() - 1);
+    let strokes = parse_strokes(&str_value(layer, ectx, g, "distortionMesh"));
+    let dm_animated = g.get("distortionMesh").is_some_and(|pr| pr.is_animated());
+    let b1 = Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 4.0), vec2(50.0, 22.0));
+    let b_rb = Rect::from_min_size(pos2(b1.max.x + 4.0, b1.min.y), vec2(78.0, 22.0));
+    let b2 = Rect::from_min_size(pos2(b_rb.max.x + 4.0, b1.min.y), vec2(48.0, 22.0));
+    let b3 = Rect::from_min_size(pos2(b2.max.x + 4.0, b1.min.y), vec2(46.0, 22.0));
+    if widgets::text_button(ui, b1, "Brush", active && tool != 9, &t, egui::Id::new(("liquify-brush", euid))).clicked() {
+        if active && tool != 9 {
+            app.ui.fx_liquify_brush.remove(&euid);
+        } else {
+            app.ui.fx_liquify_brush.insert(euid);
+            app.ui.fx_pick = None;
+        }
+    }
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.brush"), b1, "Brush");
+    let rb_resp = widgets::text_button(ui, b_rb, "Relax Brush", active && tool == 9, &t, egui::Id::new(("liquify-relax-brush", euid)));
+    if rb_resp.clicked() {
+        if active && tool == 9 {
+            app.ui.fx_liquify_brush.remove(&euid);
+        } else {
+            app.ui.fx_liquify_brush.insert(euid);
+            app.ui.fx_pick = None;
+            if let Some(pr) = g.get("tool")
+                && tool != 9
+            {
+                actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": pr.uid, "value": 9})));
+            }
+        }
+    }
+    let rb_hint = "Brush to gradually relax only the area where you click or drag";
+    rb_resp.on_hover_text(rb_hint);
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.relaxBrush"), b_rb, "Relax Brush");
+    let relax_id = egui::Id::new(("liquify-relax", euid));
+    let rresp = widgets::text_button(ui, b2, "Relax", false, &t, relax_id);
+    let holding_relax = rresp.is_pointer_button_down_on() || rresp.clicked();
+    if holding_relax && !strokes.is_empty() {
+        ui.ctx().request_repaint();
+        let dt = (ui.input(|i| i.stable_dt) as f64).clamp(1.0 / 240.0, 0.1);
+        let dt = if rresp.clicked() && !rresp.is_pointer_button_down_on() { dt.max(0.08) } else { dt };
+        let speed = app.ui.fx_liquify_speed.clamp(0.1, 20.0);
+        let pr = (g.get("brushPressure").map(|p| ectx.value(layer, p).as_f64()).unwrap_or(50.0) / 100.0).clamp(0.05, 1.0);
+        let factor = (-dt * 0.35 * pr * speed).exp();
+        let started = ui.input(|i| i.pointer.primary_pressed()) || rresp.clicked();
+        let key = gesture_key(ui, relax_id, started);
+        let relaxed = relax_strokes(strokes.clone(), factor);
+        let next_val = if relaxed.is_empty() && dm_animated { "clear".to_string() } else { relaxed };
+        set_str(actions, layer, g, "distortionMesh", next_val, Some(key));
+    }
+    let relax_hint = "Hold to gradually relax the entire distortion mesh at Speed";
+    rresp.on_hover_text(relax_hint);
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.relax"), b2, "Relax");
+    if widgets::text_button(ui, b3, "Clear", false, &t, egui::Id::new(("liquify-clear", euid))).clicked() && !strokes.is_empty() {
+        let cleared = if dm_animated { "clear".to_string() } else { String::new() };
+        set_str(actions, layer, g, "distortionMesh", cleared, None);
+    }
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.clear"), b3, "Clear");
+    let y2 = r.min.y + 28.0;
+    let cy2 = y2 + 9.0;
+    let speed_lbl = "Speed";
+    p.text(pos2(r.min.x + 20.0, cy2), Align2::LEFT_CENTER, speed_lbl, Tokens::ui(11.0), t.text_dim);
+    let (sr, nv, _) =
+        widgets::hot_number_at(ui, pos2(r.min.x + 56.0, y2), egui::Id::new(("liquify-speed", euid)), app.ui.fx_liquify_speed, 0.05, (0.1, 20.0), 1, "x", &t);
+    if let Some(nv) = nv {
+        app.ui.fx_liquify_speed = nv.clamp(0.1, 20.0);
+    }
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.speed"), sr, "Liquify Speed");
+    let is_smooth = g
+        .get("distortionMesh")
+        .filter(|pr| !pr.keys.is_empty())
+        .map(|pr| pr.keys.iter().any(|k| k.auto_bezier || k.in_interp == Interp::Bezier || k.out_interp == Interp::Bezier))
+        .unwrap_or(app.ui.fx_liquify_smooth);
+    app.ui.fx_liquify_smooth = is_smooth;
+    let anim_lbl = "Anim";
+    let ax = sr.max.x + 12.0;
+    p.text(pos2(ax, cy2), Align2::LEFT_CENTER, anim_lbl, Tokens::ui(11.0), t.text_dim);
+    let dr = Rect::from_min_size(pos2(ax + 32.0, y2), vec2(74.0, 18.0));
+    let pop_id = egui::Id::new(("liquify-interp-pop", euid));
+    let cur_interp = if is_smooth { "Smooth" } else { "Linear" };
+    if widgets::dropdown(ui, dr, cur_interp, &t, egui::Id::new(("liquify-interp", euid))).clicked() {
+        widgets::open_popup(ui, pop_id);
+    }
+    app.auto.add(&format!("effectControls.effect.{euid}.liquify.interp"), dr, "Keyframe Interpolation");
+    let opts = ["Linear".to_string(), "Smooth".to_string()];
+    if let Some(ni) = widgets::popup_menu(ui, pop_id, dr.left_bottom(), &opts, Some(usize::from(is_smooth))) {
+        let want_smooth = ni == 1;
+        app.ui.fx_liquify_smooth = want_smooth;
+        if let Some(dm) = g.get("distortionMesh")
+            && !dm.keys.is_empty()
+        {
+            let mode = if want_smooth { "autoBezier" } else { "linear" };
+            actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": dm.uid})));
+            actions.push(("keys.interpolation".into(), json!({"mode": mode})));
+        }
+    }
+    let avail = (r.width() - 36.0).max(180.0);
+    let bw = ((avail - 3.0 * 4.0) / 4.0).clamp(42.0, 84.0);
+    for (i, short) in SHORT.iter().enumerate() {
+        let (row, col) = (i / 4, i % 4);
+        let br = Rect::from_min_size(pos2(r.min.x + 20.0 + col as f32 * (bw + 4.0), r.min.y + 50.0 + row as f32 * 21.0), vec2(bw, 18.0));
+        let full = if i == 9 { "Relax (Reconstruction)" } else { LIQUIFY_TOOL_LABELS[i] };
+        let resp = widgets::text_button(ui, br, short, active && tool == i, &t, egui::Id::new(("liquify-tool", euid, i)));
+        if resp.clicked() {
+            app.ui.fx_liquify_brush.insert(euid);
+            app.ui.fx_pick = None;
+            if let Some(pr) = g.get("tool")
+                && tool != i
+            {
+                actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": pr.uid, "value": i})));
+            }
+        }
+        resp.on_hover_text(full);
+        app.auto.add(&format!("effectControls.effect.{euid}.liquify.tool.{i}"), br, full);
+    }
+}
+
+/// Liquify on the Composition viewer while its Brush mode is armed: draws the brush circle
+/// (sized in layer pixels) and paints strokes into the `distortionMesh` parameter (holding the
+/// button down continuously builds up the stroke / relax effect at `fx_liquify_speed`, one undo
+/// step per press; `Ctrl`+drag left/right resizes the brush). `fm` maps effect space to comp.
+#[allow(clippy::too_many_arguments)]
+pub fn liquify_overlay(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    map: &super::viewer::ViewerMap,
+    ectx: &EvalCtx,
+    layer: &Layer,
+    g: &PropGroup,
+    fm: &Mat3,
+    actions: &mut Actions,
+) {
+    use effectcraft_engine::effects::distort4::{LIQUIFY_TOOL_LABELS, LIQUIFY_TOOLS, LiquifyStroke, parse_strokes};
+    let euid = g.uid;
+    if !app.ui.fx_liquify_brush.contains(&euid) {
+        return;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.ui.fx_liquify_brush.remove(&euid);
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let t = app.tokens;
+    let tool = (g.get("tool").map(|pr| ectx.value(layer, pr).as_enum()).unwrap_or(0) as usize).min(LIQUIFY_TOOLS.len() - 1);
+    let tool_id = LIQUIFY_TOOLS[tool];
+    let tool_label = if tool == 9 { "Relax" } else { LIQUIFY_TOOL_LABELS[tool] };
+    let brush_size = g.get("brushSize").map(|pr| ectx.value(layer, pr).as_f64()).unwrap_or(64.0).max(1.0);
+    let chip = Rect::from_min_size(map.area.min + vec2(10.0, 10.0), vec2(236.0, 22.0));
+    painter.rect_filled(chip, 11.0, Color32::from_black_alpha(180));
+    let hint = format!("Liquify ({tool_label}) — Esc to exit");
+    painter.text(chip.center(), Align2::CENTER_CENTER, hint, Tokens::ui(11.5), t.text);
+    let clone_id = egui::Id::new(("liquify-clone-src", euid));
+    if tool_id == "clone"
+        && let Some(src) = ctx.data(|d| d.get_temp::<[f64; 2]>(clone_id))
+    {
+        let s = map.to_screen(fw::layer_to_comp(fm, src));
+        fw::draw_crosshair(painter, s + vec2(1.0, 1.0), 5.0, Color32::from_black_alpha(160));
+        fw::draw_crosshair(painter, s, 5.0, Color32::WHITE);
+    }
+    if super::space_hand(&ctx) || ui.input(|i| i.pointer.middle_down()) || matches!(app.ui.tool, crate::state::Tool::Hand | crate::state::Tool::Zoom) {
+        return;
+    }
+    let id = egui::Id::new(("viewer-liquify-brush", euid));
+    let resp = ui.interact(map.area, id, Sense::click_and_drag());
+    app.auto.add(&format!("viewer.liquify.canvas.{euid}"), map.area, "Liquify brush canvas");
+    let p0 = map.to_screen(fw::layer_to_comp(fm, [0.0, 0.0]));
+    let px = map.to_screen(fw::layer_to_comp(fm, [1.0, 0.0]));
+    let py = map.to_screen(fw::layer_to_comp(fm, [0.0, 1.0]));
+    let scale = ((px - p0).length() + (py - p0).length()) * 0.5;
+    let rad = (brush_size as f32 * 0.5 * scale).max(2.0);
+    let mods = ui.input(|i| i.modifiers);
+    let sid = egui::Id::new(("liquify-size-drag", euid));
+    let did = egui::Id::new(("liquify-drag", euid));
+    let ctrl_down = ui.input(|i| {
+        i.modifiers.ctrl
+            || i.modifiers.command
+            || i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { modifiers, .. } if modifiers.ctrl || modifiers.command))
+    });
+    if ctrl_down
+        && (resp.drag_started() || (resp.hovered() && ui.input(|i| i.pointer.primary_pressed())))
+        && ctx.data(|d| d.get_temp::<LiquifySizeDrag>(sid)).is_none()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).or(resp.hover_pos())
+    {
+        ctx.data_mut(|d| d.insert_temp(sid, LiquifySizeDrag { origin, start_size: brush_size }));
+        ctx.data_mut(|d| d.remove::<LiquifyHold>(did));
+    }
+    if let Some(sd) = ctx.data(|d| d.get_temp::<LiquifySizeDrag>(sid)) {
+        let down = ui.input(|i| i.pointer.primary_down());
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        let cur = resp.interact_pointer_pos().or(resp.hover_pos()).or_else(|| ui.input(|i| i.pointer.latest_pos())).unwrap_or(sd.origin);
+        let dx = (cur.x - sd.origin.x) as f64;
+        let new_size = (sd.start_size + dx).clamp(1.0, 2000.0);
+        if let Some(pr) = g.get("brushSize")
+            && (new_size - brush_size).abs() > 1e-3
+        {
+            actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": pr.uid, "value": new_size, "merge": format!("liquify-size-{euid}")})));
+        }
+        let srad = (new_size as f32 * 0.5 * scale).max(2.0);
+        painter.circle_stroke(sd.origin, srad, Stroke::new(1.5, Color32::from_black_alpha(160)));
+        painter.circle_stroke(sd.origin, srad, Stroke::new(1.2, t.accent));
+        let size_lbl = format!("{new_size:.0} px");
+        painter.text(sd.origin - vec2(0.0, srad + 8.0), Align2::CENTER_BOTTOM, size_lbl, Tokens::ui(11.0), t.accent);
+        if !down {
+            ctx.data_mut(|d| d.remove::<LiquifySizeDrag>(sid));
+        }
+        return;
+    }
+    if let Some(hp) = resp.hover_pos().or_else(|| resp.interact_pointer_pos()) {
+        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        let c = map.to_comp(hp);
+        app.pointer_comp = Some([c[0] as f32, c[1] as f32]);
+        painter.circle_stroke(hp, rad, Stroke::new(1.5, Color32::from_black_alpha(160)));
+        painter.circle_stroke(hp, rad, Stroke::new(1.2, t.accent));
+    }
+    if tool_id == "clone"
+        && mods.alt
+        && resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+        && let Some(lp) = fw::comp_to_layer(fm, map.to_comp(pos))
+    {
+        ctx.data_mut(|d| d.insert_temp(clone_id, lp));
+        return;
+    }
+    if mods.alt || ctrl_down {
+        return;
+    }
+    let pressed = resp.drag_started() || (resp.hovered() && ui.input(|i| i.pointer.primary_pressed())) || resp.clicked();
+    if pressed
+        && ctx.data(|d| d.get_temp::<LiquifyHold>(did)).is_none()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).or(resp.hover_pos())
+        && let Some(lp) = fw::comp_to_layer(fm, map.to_comp(pos))
+    {
+        let base = str_value(layer, ectx, g, "distortionMesh");
+        let merge = format!("liquify-hold-{euid}-{}", ctx.cumulative_pass_nr());
+        ctx.data_mut(|d| d.insert_temp(did, LiquifyHold { base, merge, points: vec![lp], accum: 0.0 }));
+    }
+    if let Some(mut h) = ctx.data(|d| d.get_temp::<LiquifyHold>(did)) {
+        let down = ui.input(|i| i.pointer.primary_down());
+        if down {
+            ctx.request_repaint();
+        }
+        if let Some(pos) = resp.interact_pointer_pos().or(resp.hover_pos()).or_else(|| ui.input(|i| i.pointer.latest_pos()))
+            && let Some(lp) = fw::comp_to_layer(fm, map.to_comp(pos))
+            && h.points.last().is_none_or(|last| (lp[0] - last[0]).hypot(lp[1] - last[1]) >= 0.5)
+        {
+            h.points.push(lp);
+        }
+        if down {
+            let dt = (ui.input(|i| i.stable_dt) as f64).clamp(1.0 / 240.0, 0.1);
+            let speed = app.ui.fx_liquify_speed.clamp(0.1, 20.0);
+            h.accum += dt * 15.0 * speed;
+            while h.accum >= 1.0 {
+                h.accum -= 1.0;
+                if let Some(&last) = h.points.last() {
+                    h.points.push(last);
+                }
+            }
+        }
+        let co = match (tool_id == "clone", ctx.data(|d| d.get_temp::<[f64; 2]>(clone_id)), h.points.first()) {
+            (true, Some(src), Some(first)) => [src[0] - first[0], src[1] - first[1]],
+            _ => g.get("cloneOffset").map(|p| ectx.value(layer, p).as_vec2()).unwrap_or([0.0; 2]),
+        };
+        let st = LiquifyStroke {
+            tool,
+            size: brush_size,
+            pressure: g.get("brushPressure").map(|pr| ectx.value(layer, pr).as_f64()).unwrap_or(50.0).clamp(1.0, 100.0),
+            jitter: g.get("turbulentJitter").map(|pr| ectx.value(layer, pr).as_f64()).unwrap_or(70.0).clamp(1.0, 100.0),
+            clone_offset: co,
+            points: h.points.clone(),
+        };
+        let mut lines: Vec<String> = parse_strokes(&h.base).iter().map(LiquifyStroke::to_line).collect();
+        lines.push(st.to_line());
+        let new_mesh = lines.join("\n");
+        if str_value(layer, ectx, g, "distortionMesh") != new_mesh {
+            set_str(actions, layer, g, "distortionMesh", new_mesh, Some(h.merge.clone()));
+            if app.ui.fx_liquify_smooth
+                && let Some(dm) = g.get("distortionMesh")
+                && dm.is_animated()
+                && !dm.keys.iter().any(|k| k.auto_bezier)
+            {
+                actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": dm.uid})));
+                actions.push(("keys.interpolation".into(), json!({"mode": "autoBezier"})));
+            }
+        }
+        if down {
+            let mut screen_pts: Vec<Pos2> = h.points.iter().map(|q| map.to_screen(fw::layer_to_comp(fm, *q))).collect();
+            screen_pts.dedup();
+            if screen_pts.len() >= 2 {
+                painter.add(egui::Shape::line(screen_pts, Stroke::new(1.5, t.accent)));
+            }
+            ctx.data_mut(|d| d.insert_temp(did, h));
+        } else {
+            ctx.data_mut(|d| d.remove::<LiquifyHold>(did));
         }
     }
 }

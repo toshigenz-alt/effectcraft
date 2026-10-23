@@ -449,20 +449,32 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Column header: Name, Label, then the visible optional columns.
     let hdr = Rect::from_min_size(pos2(rect.min.x, sr.max.y + 6.0), vec2(rect.width(), 20.0));
     p.line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, t.separator));
-    let name_w = (rect.width() * 0.40).clamp(120.0, 260.0);
+    let default_name_w = (rect.width() * 0.40).clamp(120.0, 260.0);
+    let max_name_w = (rect.width() - 60.0).max(120.0);
+    let name_w = app.ui.project_col_widths.get("name").copied().unwrap_or(default_name_w).clamp(90.0, max_name_w);
     let label_x = rect.min.x + name_w + 14.0;
     let mut cols: Vec<(&'static str, &'static str, f32, f32)> = vec![("name", "Name", rect.min.x + 26.0, name_w - 26.0), ("label", "", label_x - 8.0, 18.0)];
+    let col_w_of =
+        |widths: &std::collections::BTreeMap<String, f32>, key: &str, def: f32| -> f32 { widths.get(key).copied().unwrap_or(def).clamp(44.0, 600.0) };
     // Optional columns wider than the panel scroll horizontally under the frozen Name and Label
     // columns (Shift+wheel / trackpad over the list, or the scroll bar under it).
     let opt_x0 = label_x + 16.0;
-    let natural_end = opt_x0 + app.ui.project_columns.iter().filter_map(|k| COLUMNS.iter().find(|c| c.0 == k)).map(|c| c.2 + 4.0).sum::<f32>();
+    let natural_end = opt_x0
+        + app
+            .ui
+            .project_columns
+            .iter()
+            .filter_map(|k| COLUMNS.iter().find(|c| c.0 == k))
+            .map(|c| col_w_of(&app.ui.project_col_widths, c.0, c.2) + 4.0)
+            .sum::<f32>();
     let overflow = (natural_end - rect.max.x + 4.0).max(0.0);
     app.ui.project_hscroll = app.ui.project_hscroll.clamp(0.0, overflow);
     let hscroll = app.ui.project_hscroll;
     let mut x = opt_x0 - hscroll;
     for key in app.ui.project_columns.clone() {
-        if let Some((k, l, w)) = COLUMNS.iter().find(|c| c.0 == key) {
-            cols.push((k, l, x, *w));
+        if let Some((k, l, def_w)) = COLUMNS.iter().find(|c| c.0 == key) {
+            let w = col_w_of(&app.ui.project_col_widths, k, *def_w);
+            cols.push((k, l, x, w));
             x += w + 4.0;
         }
     }
@@ -474,7 +486,9 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if hr.width() <= 0.0 {
             continue;
         }
-        let resp = ui.interact(hr.intersect(hdr), egui::Id::new(("proj-sort", *key)), Sense::click());
+        let sort_rect =
+            if *key == "label" { hr.intersect(hdr) } else { Rect::from_min_max(hr.min, pos2((hr.max.x - 5.0).max(hr.min.x), hr.max.y)).intersect(hdr) };
+        let resp = ui.interact(sort_rect, egui::Id::new(("proj-sort", *key)), Sense::click());
         hp.with_clip_rect(hr).text(pos2(*x, hdr.center().y), Align2::LEFT_CENTER, *label, Tokens::ui(11.0), if resp.hovered() { t.text } else { t.text_dim });
         if *key == "label" {
             icons::paint(&hp, Rect::from_center_size(pos2(label_x, hdr.center().y), vec2(10.0, 10.0)), Icon::Keyframe, t.text_dim);
@@ -487,6 +501,23 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 t.text_dim,
                 Stroke::NONE,
             ));
+        }
+        if *key != "label" {
+            let div_x = if *key == "name" { rect.min.x + name_w + 4.0 } else { x + w };
+            let div_rect = Rect::from_center_size(pos2(div_x, hdr.center().y), vec2(8.0, hdr.height())).intersect(hdr);
+            if div_rect.width() > 0.0 && (*key == "name" || div_x >= opt_x0 - 2.0) {
+                let dresp = ui.interact(div_rect, egui::Id::new(("proj-col-resize", *key)), Sense::drag());
+                let hot = dresp.hovered() || dresp.dragged();
+                if hot {
+                    ctx.set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                }
+                hp.line_segment([pos2(div_x, hdr.min.y + 3.0), pos2(div_x, hdr.max.y - 3.0)], Stroke::new(1.0, if hot { t.accent } else { t.separator }));
+                if dresp.dragged() {
+                    let cur = if *key == "name" { name_w } else { *w };
+                    let (lo, hi) = if *key == "name" { (90.0, max_name_w) } else { (44.0, 600.0) };
+                    app.ui.project_col_widths.insert((*key).to_string(), (cur + dresp.drag_delta().x).clamp(lo, hi));
+                }
+            }
         }
         app.auto.add(&format!("project.sort.{key}"), hr, if label.is_empty() { "Label" } else { label });
         let column = crate::i18n::tr(if label.is_empty() { "Label" } else { label });

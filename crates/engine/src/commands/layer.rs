@@ -302,9 +302,98 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         let end = dur.map_or((start + comp.duration).min(comp.duration), |d| start + d);
         l.out_point = fr.snap_nearest(end).max(start + fr.frame_duration());
         place(&mut l, position);
+        if is_crypto_exr_item(&it)
+            && let Some(spec) = effectcraft_effects::lookup("ec.3d.cryptomatte")
+            && let Some(fx) = l.props.sub_mut("effects")
+        {
+            let mut next = proj.next_id;
+            let mut g = effectcraft_effects::instantiate(spec, &mut effectcraft_project::build::Ids(&mut next), spec.name, [size.0 as f64, size.1 as f64]);
+            if let Some(d) = g.prop_mut("display") {
+                d.value = effectcraft_keyframe::Value::Enum(0);
+            }
+            fx.children.push(g.into());
+            proj.next_id = next;
+        }
         insert_layer_at(proj, st, cid, l, index)
     })?;
     Ok(json!({"layer": id.0}))
+}
+
+fn is_crypto_exr_item(it: &effectcraft_project::Item) -> bool {
+    let ItemKind::Footage(f) = &it.kind else { return false };
+    let path_exr = std::path::Path::new(&f.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("exr"));
+    let name_exr = it.name.to_ascii_lowercase().contains(".exr");
+    let codec_exr = f.codec.eq_ignore_ascii_case("exr") || f.codec.eq_ignore_ascii_case("openexr");
+    if !path_exr && !name_exr && !codec_exr {
+        return false;
+    }
+    let file_name = std::path::Path::new(&f.path).file_name().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    it.name.to_ascii_lowercase().contains("cryp") || file_name.contains("cryp")
+}
+
+fn can_replace_source(s: &Session) -> std::result::Result<(), String> {
+    has_layers(s)?;
+    if s.state.project_selection.is_empty() {
+        return Err("select a footage, solid, or composition item in the Project panel".into());
+    }
+    Ok(())
+}
+
+/// Replace the source of the selected timeline layers (or `layers` / `layer`) with `item` (or the
+/// first selected Project item), keeping all layer attributes, transforms, keyframes, masks, and
+/// effects intact (`Alt` + drag from Project to Timeline, or `Cmd+Alt+/`).
+fn replace_source(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "layer.replaceSource";
+    let (cid, ids) = layers_p(s, p)?;
+    if ids.is_empty() {
+        return Err(bad(cmd, "no layer selected"));
+    }
+    let ids = unlocked(s, cid, ids, cmd)?;
+    let item = match p.get("item") {
+        Some(Value::Number(n)) => ItemId(n.as_u64().unwrap_or(0)),
+        Some(Value::String(name)) => s.project.find_by_name(name).map(|i| i.id).ok_or_else(|| bad(cmd, format!("no item `{name}`")))?,
+        _ => *s.state.project_selection.first().ok_or_else(|| bad(cmd, "missing `item` (select an item in the Project panel)"))?,
+    };
+    if s.project.comp_contains(item, cid) {
+        return Err(bad(cmd, "a composition can't contain itself"));
+    }
+    let it = s.project.item(item).ok_or_else(|| bad(cmd, "no such item"))?.clone();
+    let (new_src, has_audio) = match &it.kind {
+        ItemKind::Comp(_) => (LayerSource::Comp { item }, true),
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Data => {
+            return Err(bad(cmd, "data files can't be layer sources"));
+        }
+        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => (LayerSource::Model { item }, false),
+        ItemKind::Footage(f) => (LayerSource::Footage { item }, f.has_audio),
+        ItemKind::Solid(_) => (LayerSource::Solid { item }, false),
+        ItemKind::Folder => return Err(bad(cmd, "folders can't be layer sources")),
+    };
+    s.edit("Replace Layer Source", None, |proj, _| {
+        let old_names: std::collections::HashMap<ItemId, String> = proj.items.iter().map(|(id, i)| (*id, i.name.clone())).collect();
+        for lid in &ids {
+            let mut next = proj.next_id;
+            let l = layer_mut(proj, cid, *lid)?;
+            let was_default_name = l.source.item().and_then(|old_id| old_names.get(&old_id)).is_some_and(|old_name| l.name == *old_name);
+            l.source = new_src.clone();
+            if was_default_name {
+                l.name = it.name.clone();
+            }
+            if new_src.is_av() {
+                if l.props.group("masks").is_none() {
+                    l.props.children.push(build::masks(&mut build::Ids(&mut next)).into());
+                }
+                if l.props.group("effects").is_none() {
+                    l.props.children.push(build::effects(&mut build::Ids(&mut next)).into());
+                }
+            }
+            if has_audio && l.props.group("audio").is_none() {
+                l.props.children.push(build::audio(&mut build::Ids(&mut next)).into());
+            }
+            proj.next_id = next;
+        }
+        Ok(())
+    })?;
+    Ok(json!({"layers": ids.iter().map(|l| l.0).collect::<Vec<_>>(), "item": item.0}))
 }
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1628,6 +1717,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_comp,
             add_item
         ),
+        cmd!(
+            "layer.replaceSource",
+            "Replace Source",
+            ["Layer"],
+            Some("Cmd+Alt+/"),
+            "{layers?, item?: id|name (default: first selected in Project)} — replaces the selected layers' source while preserving all attributes, keyframes, masks and effects",
+            can_replace_source,
+            replace_source
+        ),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
         cmd!("layer.selectNext", "Select Next Layer", [], Some("Cmd+ArrowDown"), "{add?}", has_comp, select_next),
         cmd!("layer.selectPrevious", "Select Previous Layer", [], Some("Cmd+ArrowUp"), "{add?}", has_comp, select_prev),
@@ -1862,5 +1960,34 @@ mod parent_chain_tests {
             comp.layers.push(layer);
         }
         assert!(check_parent_chain(&comp, &[LayerId(c)], Some(LayerId(10_000)), 4096, 1_048_576).is_ok());
+    }
+
+    #[test]
+    fn replace_source_preserves_transform_effects_and_supports_undo() {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "Replace Source Test", "width": 320, "height": 180, "duration": 2})).unwrap();
+        let lid = s.execute("layer.newSolid", json!({"name": "Red Solid 1", "color": [1.0, 0.0, 0.0]})).unwrap()["layer"].as_u64().unwrap();
+        let old_item = s.active_comp().unwrap().layer(LayerId(lid)).unwrap().source.item().unwrap();
+        // Create a second solid item by adding another solid layer.
+        let temp_lid = s.execute("layer.newSolid", json!({"name": "Blue Solid 1", "color": [0.0, 0.0, 1.0]})).unwrap()["layer"].as_u64().unwrap();
+        let new_item = s.active_comp().unwrap().layer(LayerId(temp_lid)).unwrap().source.item().unwrap();
+
+        // Set transform position and apply an effect on the original layer.
+        s.execute("prop.set", json!({"layer": lid, "path": "transform/position", "value": [42.0, 84.0, 0.0]})).unwrap();
+        s.execute("effect.apply", json!({"layer": lid, "effect": "ec.blur.gaussian"})).unwrap();
+
+        // Replace source using explicit `item` parameter; default name updates to new item name.
+        s.execute("layer.replaceSource", json!({"layers": [lid], "item": new_item.0})).unwrap();
+        let l = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
+        assert_eq!(l.source.item(), Some(new_item));
+        assert_eq!(l.name, "Blue Solid 1");
+        assert_eq!(l.props.prop("transform/position").unwrap().value.as_vec3(), [42.0, 84.0, 0.0]);
+        assert_eq!(l.effects().unwrap().groups().count(), 1);
+
+        // Undo restores the original source and name.
+        assert!(s.undo());
+        let l_undo = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
+        assert_eq!(l_undo.source.item(), Some(old_item));
+        assert_eq!(l_undo.name, "Red Solid 1");
     }
 }

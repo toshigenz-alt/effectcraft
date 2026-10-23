@@ -768,6 +768,7 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
 
 /// The label and control rows of a form: the part of [`show_form`] that scrolls.
 fn form_grid(ui: &mut egui::Ui, f: &mut Form, regs: &mut Vec<(String, egui::Rect, String)>, browse: &mut Option<usize>, focused: &mut bool) {
+    let prefer_frame_rate = matches!(f.command.as_str(), "file.interpretFootage" | "file.interpretProxy");
     egui::Grid::new("form-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
         for (i, fl) in f.fields.iter_mut().enumerate() {
             ui.label(tr(&fl.label));
@@ -777,14 +778,14 @@ fn form_grid(ui: &mut egui::Ui, f: &mut Form, regs: &mut Vec<(String, egui::Rect
                     let r = ui.add(crate::widgets::drag_value(egui::DragValue::new(value).speed(*speed).max_decimals(dec)));
                     // The first field takes the keyboard when the form opens. (A number edits
                     // as text once focused; the selection is clamped to what it shows.)
-                    if !std::mem::replace(focused, true) {
+                    if (!prefer_frame_rate || fl.key == "frameRate") && !std::mem::replace(focused, true) {
                         crate::widgets::focus_on_open(ui.ctx(), &r, &" ".repeat(64));
                     }
                     r.rect
                 }
                 FieldKind::Text(s) => {
                     let r = ui.add(egui::TextEdit::singleline(s).desired_width(220.0));
-                    if !std::mem::replace(focused, true) {
+                    if (!prefer_frame_rate || fl.key == "frameRate") && !std::mem::replace(focused, true) {
                         crate::widgets::focus_on_open(ui.ctx(), &r, s);
                     }
                     r.rect

@@ -504,6 +504,9 @@ pub fn time_reverse(keys: &mut [Keyframe]) {
 
 /// Evaluate a keyframed property at `t`. `spatial` selects motion-path semantics for 2D/3D values.
 pub fn evaluate(keys: &[Keyframe], t: Tick, spatial: bool) -> Option<Value> {
+    if let Some(v) = value::evaluate_liquify_keys(keys, t) {
+        return Some(v);
+    }
     let first = keys.first()?;
     if keys.len() == 1 || t <= first.time {
         return Some(first.value.clone());
@@ -520,7 +523,7 @@ pub fn evaluate(keys: &[Keyframe], t: Tick, spatial: bool) -> Option<Value> {
 pub fn segment_value(keys: &[Keyframe], i: usize, t: Tick, spatial: bool) -> Value {
     let a = &keys[i];
     let b = &keys[i + 1];
-    if a.out_interp == Interp::Hold || !a.value.interpolates() {
+    if a.out_interp == Interp::Hold || !a.value.can_lerp(&b.value) {
         return a.value.clone();
     }
     let (t0, t1) = (secs(a.time), secs(b.time));
@@ -1007,6 +1010,20 @@ mod tests {
         assert_eq!(keys.iter().map(|k| k.time.seconds().round() as i64).collect::<Vec<_>>(), vec![1, 3, 4]);
         assert_eq!(keys[0].value, Value::Scalar(10.0));
         assert_eq!(keys[2].in_interp, Interp::Hold);
+    }
+
+    #[test]
+    fn liquify_mesh_keys_accumulate_and_interpolate_across_segments() {
+        let k0 = Keyframe::new(s(0.0), Value::Str("warp 10 20 30 50 4 5".into())).eased();
+        let k1 = Keyframe::new(s(1.0), Value::Str("pucker 60 70 30 50".into())).eased();
+        let keys = vec![k0, k1];
+        let mid = evaluate(&keys, s(0.5), false).unwrap();
+        let Value::Str(text) = mid else { panic!("expected Str") };
+        assert!(text.starts_with("liquify-kf smooth 0 "), "{text}");
+        let after = evaluate(&keys, s(1.5), false).unwrap();
+        let Value::Str(after_text) = after else { panic!("expected Str") };
+        // Past the second key, both keys remain active in the cumulative stroke list.
+        assert!(after_text.contains("warp 10 20 30 50 4 5") && after_text.contains("pucker 60 70 30 50"), "{after_text}");
     }
 
     proptest::proptest! {

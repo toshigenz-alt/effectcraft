@@ -709,6 +709,11 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Auxiliary 3D channels (depth, IDs, Cryptomatte) of `layer` at `ctx.time`.
+    pub fn layer_aux(&self, ctx: &EvalCtx<'a>, layer: &Layer) -> Option<Arc<effectcraft_raster::AuxChannels>> {
+        FxHost { r: self, ctx, layer, origin: [0.0; 2], index: 0, original: None }.aux()
+    }
+
     /// The layer cache to keep this render's buffers in: none once its footage reads were
     /// called off, as they may have come back empty ([`FootageSource::called_off`], #329).
     fn cache_to_keep(&self) -> Option<&'a LayerCache> {

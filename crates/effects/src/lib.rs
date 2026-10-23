@@ -16,7 +16,7 @@ mod card3d;
 pub mod catalog;
 mod channel;
 mod channel2;
-mod channel3d;
+pub mod channel3d;
 mod color2;
 mod color3;
 mod color_fx;

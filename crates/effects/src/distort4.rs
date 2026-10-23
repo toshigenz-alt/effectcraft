@@ -163,7 +163,66 @@ impl LiquifyStroke {
 
 /// Parse the `distortionMesh` text into strokes (bad lines are skipped).
 pub fn parse_strokes(s: &str) -> Vec<LiquifyStroke> {
+    if let Some((_, seg, u, secs)) = split_kf(s) {
+        let a = secs.get(seg).copied().unwrap_or("");
+        let b = secs.get((seg + 1).min(secs.len().saturating_sub(1))).copied().unwrap_or(a);
+        return blend_stroke_lists(a, b, u);
+    }
+    if let Some((t, sa, sb)) = split_blend(s) {
+        return blend_stroke_lists(sa, sb, t);
+    }
     s.lines().filter_map(LiquifyStroke::parse).collect()
+}
+
+fn split_kf(s: &str) -> Option<(bool, usize, f64, Vec<&str>)> {
+    let (first, rest) = s.trim().split_once('\n')?;
+    let hdr = first.strip_prefix("liquify-kf ")?;
+    let mut it = hdr.split_whitespace();
+    let mode = it.next()?;
+    let smooth = mode.eq_ignore_ascii_case("smooth");
+    let seg: usize = it.next()?.parse().ok()?;
+    let u: f64 = it.next()?.parse().ok()?;
+    let secs: Vec<&str> = rest.split("---liquify-kf---").map(str::trim).collect();
+    (!secs.is_empty()).then_some((smooth, seg.min(secs.len().saturating_sub(1)), u.clamp(0.0, 1.0), secs))
+}
+
+fn split_blend(s: &str) -> Option<(f64, &str, &str)> {
+    let (first, rest) = s.split_once('\n')?;
+    let t: f64 = first.strip_prefix("blend ")?.trim().parse().ok()?;
+    let (sa, sb) = rest.split_once("---liquify-blend---")?;
+    Some((t.clamp(0.0, 1.0), sa.trim(), sb.trim()))
+}
+
+fn blend_stroke_lists(sa: &str, sb: &str, t: f64) -> Vec<LiquifyStroke> {
+    let la: Vec<LiquifyStroke> = sa.lines().filter_map(LiquifyStroke::parse).collect();
+    let lb: Vec<LiquifyStroke> = sb.lines().filter_map(LiquifyStroke::parse).collect();
+    let mut used_b = vec![false; lb.len()];
+    let mut out = Vec::new();
+    for a in &la {
+        let al = a.to_line();
+        if let Some(idx) = lb.iter().enumerate().position(|(i, b)| !used_b[i] && b.to_line() == al) {
+            used_b[idx] = true;
+            out.push(a.clone());
+        } else if 1.0 - t > 1e-4 {
+            let mut st = a.clone();
+            st.pressure = (st.pressure * (1.0 - t) * 1000.0).round() / 1000.0;
+            if st.pressure > 1e-3 {
+                out.push(st);
+            }
+        }
+    }
+    if t > 1e-4 {
+        for (i, b) in lb.into_iter().enumerate() {
+            if !used_b[i] {
+                let mut st = b;
+                st.pressure = (st.pressure * t * 1000.0).round() / 1000.0;
+                if st.pressure > 1e-3 {
+                    out.push(st);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Displacement mesh: offsets (layer pixels) at grid nodes spaced `cell` apart.
@@ -210,18 +269,32 @@ pub fn build_mesh(strokes: &[LiquifyStroke], w: f64, h: f64, frozen: &(dyn Fn(f6
         }
     }
     for (si, s) in strokes.iter().enumerate() {
-        let r = (s.size * 0.5).max(1.0);
         let pr = (s.pressure / 100.0).clamp(0.0, 1.0);
+        if LIQUIFY_TOOLS[s.tool] == "reconstruction" && s.size <= 0.0 {
+            let k = (1.0 - pr).clamp(0.0, 1.0);
+            for d in &mut m.d {
+                d[0] *= k;
+                d[1] *= k;
+            }
+            continue;
+        }
+        let r = (s.size * 0.5).max(1.0);
         // Dabs every r/4 along the stroke; each dab knows the local motion of the brush.
         let mut dabs: Vec<([f64; 2], [f64; 2])> = vec![];
         if s.points.len() == 1 {
             dabs.push((s.points[0], [0.0; 2]));
         }
+        let mut last_step = [0.0; 2];
         for seg in s.points.windows(2) {
             let (a, b) = (seg[0], seg[1]);
             let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+            if len <= 1e-6 {
+                dabs.push((b, last_step));
+                continue;
+            }
             let n = ((len / (r * 0.25)).ceil() as usize).max(1);
             let step = [(b[0] - a[0]) / n as f64, (b[1] - a[1]) / n as f64];
+            last_step = step;
             for k in 1..=n {
                 dabs.push(([a[0] + step[0] * k as f64, a[1] + step[1] * k as f64], step));
             }
@@ -312,8 +385,10 @@ pub fn build_mesh(strokes: &[LiquifyStroke], w: f64, h: f64, frozen: &(dyn Fn(f6
                         }
                         // Reconstruction: relax toward no distortion.
                         _ => {
-                            d[0] *= 1.0 - w;
-                            d[1] *= 1.0 - w;
+                            let r_scale = if mv[0] == 0.0 && mv[1] == 0.0 && s.points.len() > 1 { 0.08 } else { 0.35 };
+                            let k = (1.0 - r_scale * w).clamp(0.0, 1.0);
+                            d[0] *= k;
+                            d[1] *= k;
                         }
                     }
                 }
@@ -324,6 +399,73 @@ pub fn build_mesh(strokes: &[LiquifyStroke], w: f64, h: f64, frozen: &(dyn Fn(f6
 }
 
 type MeshCache = Mutex<HashMap<u64, Arc<Mesh>>>;
+
+/// Evaluate a `distortionMesh` string (plain strokes, two-keyframe `"blend ..."`, or multi-keyframe
+/// `"liquify-kf {smooth|linear} {seg} {u}"`) into a displacement [`Mesh`].
+pub fn eval_liquify_mesh(text: &str, w: f64, h: f64, frozen: &(dyn Fn(f64, f64) -> bool + Sync)) -> Mesh {
+    if let Some((smooth, seg, u, secs)) = split_kf(text) {
+        let n = secs.len();
+        let i1 = seg.min(n.saturating_sub(1));
+        let i2 = (seg + 1).min(n.saturating_sub(1));
+        let mut m1 = build_mesh(&parse_strokes(secs[i1]), w, h, frozen);
+        if i1 == i2 || u <= 0.0 {
+            return m1;
+        }
+        let m2 = build_mesh(&parse_strokes(secs[i2]), w, h, frozen);
+        if u >= 1.0 {
+            return m2;
+        }
+        if !smooth {
+            for (d1, d2) in m1.d.iter_mut().zip(&m2.d) {
+                d1[0] = d1[0] * (1.0 - u) + d2[0] * u;
+                d1[1] = d1[1] * (1.0 - u) + d2[1] * u;
+            }
+            for (f1, f2) in m1.freeze.iter_mut().zip(&m2.freeze) {
+                *f1 = (*f1 * (1.0 - u) + *f2 * u).clamp(0.0, 1.0);
+            }
+            return m1;
+        }
+        let m0 = (i1 > 0).then(|| build_mesh(&parse_strokes(secs[i1 - 1]), w, h, frozen));
+        let m3 = (i2 + 1 < n).then(|| build_mesh(&parse_strokes(secs[i2 + 1]), w, h, frozen));
+        let u2 = u * u;
+        let u3 = u2 * u;
+        let h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
+        let h10 = u3 - 2.0 * u2 + u;
+        let h01 = -2.0 * u3 + 3.0 * u2;
+        let h11 = u3 - u2;
+        for k in 0..m1.d.len() {
+            let p1 = m1.d[k];
+            let p2 = m2.d[k];
+            let t1 = match &m0 {
+                Some(m) => [0.5 * (p2[0] - m.d[k][0]), 0.5 * (p2[1] - m.d[k][1])],
+                None => [0.0, 0.0],
+            };
+            let t2 = match &m3 {
+                Some(m) => [0.5 * (m.d[k][0] - p1[0]), 0.5 * (m.d[k][1] - p1[1])],
+                None => [0.0, 0.0],
+            };
+            m1.d[k] = [h00 * p1[0] + h10 * t1[0] + h01 * p2[0] + h11 * t2[0], h00 * p1[1] + h10 * t1[1] + h01 * p2[1] + h11 * t2[1]];
+        }
+        let s_u = u2 * (3.0 - 2.0 * u);
+        for (f1, f2) in m1.freeze.iter_mut().zip(&m2.freeze) {
+            *f1 = (*f1 * (1.0 - s_u) + *f2 * s_u).clamp(0.0, 1.0);
+        }
+        return m1;
+    }
+    if let Some((t, sa, sb)) = split_blend(text) {
+        let mut ma = build_mesh(&parse_strokes(sa), w, h, frozen);
+        let mb = build_mesh(&parse_strokes(sb), w, h, frozen);
+        for (da, db) in ma.d.iter_mut().zip(&mb.d) {
+            da[0] = da[0] * (1.0 - t) + db[0] * t;
+            da[1] = da[1] * (1.0 - t) + db[1] * t;
+        }
+        for (fa, fb) in ma.freeze.iter_mut().zip(&mb.freeze) {
+            *fa = *fa * (1.0 - t) + *fb * t;
+        }
+        return ma;
+    }
+    build_mesh(&parse_strokes(text), w, h, frozen)
+}
 
 /// Liquify's displacement mesh for the instance (replayed strokes, cached; also used by the
 /// GPU kernels).
@@ -349,12 +491,12 @@ pub fn liquify_mesh(ctx: &EffectCtx) -> Arc<Mesh> {
     if let Some(m) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
         return m;
     }
-    let strokes = parse_strokes(text);
     let frozen = |x: f64, y: f64| match &poly {
         Some(p) => point_in_poly(&p.points, x, y) != p.inverted,
         None => false,
     };
-    let m = Arc::new(build_mesh(&strokes, ctx.layer_size[0].max(1.0), ctx.layer_size[1].max(1.0), &frozen));
+    let (w, h) = (ctx.layer_size[0].max(1.0), ctx.layer_size[1].max(1.0));
+    let m = Arc::new(eval_liquify_mesh(text, w, h, &frozen));
     if let Ok(mut c) = cache.lock() {
         if c.len() > 32 {
             c.clear();

@@ -327,9 +327,27 @@ impl Value {
     pub fn interpolates(&self) -> bool {
         matches!(self, Value::Scalar(_) | Value::Vec2(_) | Value::Vec3(_) | Value::Color(_) | Value::Path(_) | Value::Gradient(_))
     }
+    /// Whether the segment from `self` to `o` can be interpolated (numeric values, paths,
+    /// gradients, and Liquify distortion mesh stroke lists).
+    pub fn can_lerp(&self, o: &Value) -> bool {
+        match (self, o) {
+            (Value::Str(a), Value::Str(b)) => (!a.trim().is_empty() || !b.trim().is_empty()) && is_liquify_mesh_str(a) && is_liquify_mesh_str(b),
+            _ => self.interpolates(),
+        }
+    }
     pub fn lerp(&self, o: &Value, t: f64) -> Value {
         match (self, o) {
             (Value::Path(a), Value::Path(b)) => Value::Path(a.lerp(b, t)),
+            (Value::Str(a), Value::Str(b)) if self.can_lerp(o) => {
+                let t = t.clamp(0.0, 1.0);
+                if t <= 0.0 || a == b {
+                    Value::Str(a.clone())
+                } else if t >= 1.0 {
+                    Value::Str(b.clone())
+                } else {
+                    Value::Str(format!("blend {t:.6}\n{}\n---liquify-blend---\n{}", a.trim_end(), b.trim_end()))
+                }
+            }
             (Value::Gradient(a), Value::Gradient(b)) if a.colors.len() == b.colors.len() && a.opacities.len() == b.opacities.len() => {
                 let colors = a
                     .colors
@@ -479,4 +497,128 @@ impl Value {
             v => serde_json::to_value(v).unwrap_or_default(),
         }
     }
+}
+
+const LIQUIFY_STROKE_PREFIXES: [&str; 12] = [
+    "warp ",
+    "turbulence ",
+    "twirlClockwise ",
+    "twirlCounterclockwise ",
+    "pucker ",
+    "bloat ",
+    "shiftPixels ",
+    "reflection ",
+    "clone ",
+    "reconstruction ",
+    "freeze ",
+    "thaw ",
+];
+
+pub fn is_liquify_mesh_str(s: &str) -> bool {
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).all(|l| {
+        l == "clear"
+            || l == "---liquify-blend---"
+            || l == "---liquify-kf---"
+            || l.starts_with("blend ")
+            || l.starts_with("liquify-kf ")
+            || LIQUIFY_STROKE_PREFIXES.iter().any(|t| l.starts_with(t))
+    })
+}
+
+fn extract_key_strokes(s: &str) -> Option<Vec<String>> {
+    let trimmed = s.trim();
+    if trimmed.eq_ignore_ascii_case("clear") {
+        return None;
+    }
+    if let Some((first, rest)) = trimmed.split_once('\n')
+        && let Some(hdr) = first.strip_prefix("liquify-kf ")
+    {
+        let mut it = hdr.split_whitespace();
+        let _mode = it.next();
+        let seg: usize = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        let u: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+        let secs: Vec<&str> = rest.split("---liquify-kf---").collect();
+        let pick = if u >= 0.5 { (seg + 1).min(secs.len().saturating_sub(1)) } else { seg.min(secs.len().saturating_sub(1)) };
+        let body = secs.get(pick).copied().unwrap_or("");
+        return Some(body.lines().map(str::trim).filter(|l| LIQUIFY_STROKE_PREFIXES.iter().any(|t| l.starts_with(t))).map(str::to_string).collect());
+    }
+    if let Some((first, rest)) = trimmed.split_once('\n')
+        && let Some(u_str) = first.strip_prefix("blend ")
+        && let Some((sa, sb)) = rest.split_once("---liquify-blend---")
+    {
+        let u: f64 = u_str.trim().parse().unwrap_or(0.0);
+        let body = if u >= 0.5 { sb } else { sa };
+        return Some(body.lines().map(str::trim).filter(|l| LIQUIFY_STROKE_PREFIXES.iter().any(|t| l.starts_with(t))).map(str::to_string).collect());
+    }
+    Some(trimmed.lines().map(str::trim).filter(|l| LIQUIFY_STROKE_PREFIXES.iter().any(|t| l.starts_with(t))).map(str::to_string).collect())
+}
+
+/// Evaluate a Liquify `distortionMesh` keyframe track at `t`, accumulating strokes across
+/// keyframes in time order (unless a keyframe is explicitly `"clear"`) and encoding either
+/// linear or smooth (Cubic Hermite / Catmull-Rom) multi-keyframe interpolation.
+pub fn evaluate_liquify_keys(keys: &[crate::Keyframe], t: effectcraft_time::Tick) -> Option<Value> {
+    if keys.is_empty() {
+        return None;
+    }
+    let mut has_liquify = false;
+    for k in keys {
+        match &k.value {
+            Value::Str(s) if s.trim().is_empty() => {}
+            Value::Str(s) if is_liquify_mesh_str(s) => has_liquify = true,
+            _ => return None,
+        }
+    }
+    if !has_liquify {
+        return None;
+    }
+    let mut acc: Vec<String> = Vec::new();
+    let mut cum: Vec<String> = Vec::with_capacity(keys.len());
+    for k in keys {
+        let Value::Str(s) = &k.value else { return None };
+        match extract_key_strokes(s) {
+            None => acc.clear(),
+            Some(lines) => {
+                let mut used = vec![false; acc.len()];
+                let mut next = acc.clone();
+                for line in lines {
+                    if let Some(idx) = acc.iter().enumerate().position(|(i, a)| !used[i] && a == &line) {
+                        used[idx] = true;
+                    } else {
+                        next.push(line);
+                    }
+                }
+                acc = next;
+            }
+        }
+        cum.push(acc.join("\n"));
+    }
+    let n = keys.len();
+    if n == 1 || t <= keys[0].time {
+        return Some(Value::Str(cum[0].clone()));
+    }
+    if t >= keys[n - 1].time {
+        return Some(Value::Str(cum[n - 1].clone()));
+    }
+    let seg = keys.partition_point(|k| k.time <= t) - 1;
+    if keys[seg].out_interp == crate::Interp::Hold {
+        return Some(Value::Str(cum[seg].clone()));
+    }
+    let (t0, t1) = (keys[seg].time.seconds(), keys[seg + 1].time.seconds());
+    let u = ((t.seconds() - t0) / (t1 - t0).max(1e-12)).clamp(0.0, 1.0);
+    if u <= 0.0 {
+        return Some(Value::Str(cum[seg].clone()));
+    }
+    if u >= 1.0 {
+        return Some(Value::Str(cum[seg + 1].clone()));
+    }
+    let smooth =
+        keys[seg].out_interp == crate::Interp::Bezier || keys[seg + 1].in_interp == crate::Interp::Bezier || keys[seg].auto_bezier || keys[seg + 1].auto_bezier;
+    if !smooth && cum[seg] == cum[seg + 1] {
+        return Some(Value::Str(cum[seg].clone()));
+    }
+    if n == 2 && !smooth {
+        return Some(Value::Str(format!("blend {u:.6}\n{}\n---liquify-blend---\n{}", cum[0], cum[1])));
+    }
+    let mode = if smooth { "smooth" } else { "linear" };
+    Some(Value::Str(format!("liquify-kf {mode} {seg} {u:.6}\n{}", cum.join("\n---liquify-kf---\n"))))
 }

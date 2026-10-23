@@ -186,6 +186,38 @@ fn pick_color(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"prop": uid, "color": color}))
 }
 
+/// Cryptomatte eyedropper: sample the ID with the highest coverage at `(x, y)` in layer pixels
+/// and replace (`mode: "replace"`), add (`mode: "add"`), or remove (`mode: "remove"`) it in the
+/// effect's `selection` parameter.
+fn pick_cryptomatte(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "effect.pickCryptomatte";
+    let (cid, lid, fx_uid) = find_fx(s, p, cmd)?;
+    let (Some(x), Some(y)) = (f_p(p, "x"), f_p(p, "y")) else { return Err(bad(cmd, "missing `x` / `y` (layer pixels)")) };
+    let mode = str_p(p, "mode").unwrap_or("replace");
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    let layer = comp.layer(lid).ok_or(EngineError::NoComp)?;
+    let fx = layer.effects().ok_or_else(|| bad(cmd, "no effects"))?;
+    let g = fx.groups().find(|g| g.uid == fx_uid).ok_or_else(|| bad(cmd, "no such effect"))?;
+    let sel_prop = g.prop("selection").ok_or_else(|| bad(cmd, "effect has no `selection` parameter"))?;
+    let sel_uid = sel_prop.uid;
+    let t = super::time_p(s, p, Some(comp));
+    let ctx = effectcraft_render::EvalCtx { project: &s.project, comp_id: cid, comp, time: t, expr: s.expr.as_deref(), footage: None };
+    let layer_idx = g.prop("layer").map(|pr| ctx.value(layer, pr).as_enum()).unwrap_or(0) as usize;
+    let current = match ctx.value(layer, sel_prop) {
+        effectcraft_keyframe::Value::Str(s) => s,
+        effectcraft_keyframe::Value::Text(doc) => doc.text,
+        _ => String::new(),
+    };
+    let mut r = effectcraft_render::Renderer::new(&s.project, &*s.footage, effectcraft_render::RenderOpts::default());
+    r.expr = s.expr.as_deref();
+    r.cache = Some(&s.layer_cache);
+    let aux = r.layer_aux(&ctx, layer).ok_or_else(|| bad(cmd, "this layer has no Cryptomatte channels"))?;
+    let (picked, updated) = effectcraft_effects::channel3d::pick_cryptomatte_at(&aux, layer_idx, x, y, &current, mode)
+        .ok_or_else(|| bad(cmd, "no Cryptomatte ID at that point"))?;
+    s.execute("prop.set", json!({"comp": cid.0, "layer": lid.0, "prop": sel_uid, "value": updated}))?;
+    Ok(json!({"prop": sel_uid, "picked": picked, "selection": updated}))
+}
+
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = super::comp_id(s, p)?;
     let fx = effects_p(s, p, "effect.remove")?;
@@ -631,6 +663,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{layer?, effect?: index|uid|name, param: id (e.g. screenColour) | prop: uid, x, y (effect space), average?: bool (5×5), time?} — the colour of the effect's input there",
             has_layers,
             pick_color
+        ),
+        cmd!(
+            "effect.pickCryptomatte",
+            "Pick Cryptomatte ID",
+            [],
+            None,
+            "{layer?, effect?: index|uid|name, x, y (layer pixels), mode?: replace|add|remove, time?} — picks the Cryptomatte ID at that point into Selection",
+            has_layers,
+            pick_cryptomatte
         ),
         cmd!("effect.applyLast", "Last Effect", ["Effect"], Some("Cmd+Alt+Shift+E"), "{layers?}", has_layers, last),
         cmd!("effect.removeAll", "Remove All", ["Effect"], Some("Cmd+Shift+E"), "{layers?}", has_layers, remove_all),

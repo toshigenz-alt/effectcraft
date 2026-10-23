@@ -594,6 +594,10 @@ impl EffectcraftApp {
     /// Show panel `p` (opening it in its usual place if it is closed), bring it to the front and
     /// give it the focus: Window ▸ <panel>.
     pub fn show_panel(&mut self, p: PanelKind) {
+        if !matches!(p, PanelKind::Composition | PanelKind::Viewer(_) | PanelKind::EffectControls) {
+            self.ui.fx_liquify_brush.clear();
+            self.ui.fx_pick = None;
+        }
         if !self.ui.floating.iter().any(|f| f.panels.contains(&p)) && self.ui.maximized.is_some_and(|m| m != p) {
             self.ui.maximized = None;
         }
@@ -1675,6 +1679,14 @@ impl EffectcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+        let prev_tool = self.ui.tool;
+        let prev_focused = self.ui.focused;
+        let prev_comp = self.session.state.active_comp;
+        let prev_layers = self.session.state.selected_layers.clone();
+        let prev_props = self.session.state.selected_props.clone();
+        let prev_proj_sel = self.session.state.project_selection.clone();
+        let prev_liquify = self.ui.fx_liquify_brush.clone();
+        let prev_pick = self.ui.fx_pick.clone();
         let tab_had_widget_focus = ctx.egui_wants_keyboard_input();
         menus::handle_shortcuts(self, &ctx);
         if !ctx.input(|i| i.pointer.primary_down()) {
@@ -1703,6 +1715,47 @@ impl EffectcraftApp {
         prefs_live::dropped_files(self, ui, full);
         if !tab_had_widget_focus {
             menus::handle_tab_shortcut(self, &ctx);
+        }
+        let other_panel_interacted = (self.ui.focused != prev_focused || ctx.input(|i| i.pointer.any_pressed()))
+            && !matches!(self.ui.focused, PanelKind::Composition | PanelKind::Viewer(_) | PanelKind::EffectControls);
+        let sel_or_tool_changed = self.ui.tool != prev_tool
+            || self.session.state.active_comp != prev_comp
+            || self.session.state.selected_layers != prev_layers
+            || self.session.state.project_selection != prev_proj_sel
+            || other_panel_interacted;
+        let props_stay_in_effect = |comp: Option<&effectcraft_engine::project::Comp>, fx_uid: u64, props: &[(effectcraft_engine::project::LayerId, u64)]| {
+            !props.is_empty()
+                && props.iter().all(|(lid, puid)| {
+                    comp.and_then(|c| c.layer(*lid))
+                        .and_then(|l| l.props.find_group(fx_uid))
+                        .is_some_and(|g| g.uid == *puid || g.find(*puid).is_some() || g.find_group(*puid).is_some())
+                })
+        };
+        if sel_or_tool_changed {
+            if !self.ui.fx_liquify_brush.is_empty() && self.ui.fx_liquify_brush == prev_liquify {
+                self.ui.fx_liquify_brush.clear();
+            }
+            if self.ui.fx_pick.is_some() && self.ui.fx_pick == prev_pick {
+                self.ui.fx_pick = None;
+            }
+        } else if self.session.state.selected_props != prev_props {
+            let comp = self.session.active_comp();
+            let props = &self.session.state.selected_props;
+            if !self.ui.fx_liquify_brush.is_empty() && self.ui.fx_liquify_brush == prev_liquify {
+                self.ui.fx_liquify_brush.retain(|&fx_uid| props_stay_in_effect(comp, fx_uid, props));
+            }
+            if let Some(pick) = &self.ui.fx_pick
+                && self.ui.fx_pick == prev_pick
+            {
+                let fx_uid = comp
+                    .and_then(|c| c.layer(effectcraft_engine::project::LayerId(pick.layer)))
+                    .and_then(|l| l.effects())
+                    .and_then(|fx| fx.groups().find(|g| g.find(pick.prop).is_some()))
+                    .map(|g| g.uid);
+                if !fx_uid.is_some_and(|u| props_stay_in_effect(comp, u, props)) {
+                    self.ui.fx_pick = None;
+                }
+            }
         }
         panels::precomp::mini_flowchart(self, &ctx);
         panels::home::capture_thumbnail(self);

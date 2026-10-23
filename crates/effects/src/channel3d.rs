@@ -379,6 +379,53 @@ pub fn selection_hashes(sel: &str, manifest: Option<&[(String, u32)]>) -> Vec<u3
 
 pub const CRYPTO_LAYERS: [&str; 3] = ["CryptoObject", "CryptoMaterial", "CryptoAsset"];
 
+fn format_selection_item(s: &str) -> String {
+    if s.contains(',') || s.starts_with('"') || s.starts_with('\'') {
+        let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Sample the Cryptomatte ID with the highest coverage at layer coordinates `(lx, ly)` and update
+/// the `current` selection according to `mode` (`"replace"`, `"add"`, or `"remove"`). Returns
+/// `(picked_name_or_hex, updated_selection)`.
+pub fn pick_cryptomatte_at(a: &AuxChannels, layer_idx: usize, lx: f64, ly: f64, current: &str, mode: &str) -> Option<(String, String)> {
+    let layers = a.crypto_layers();
+    if layers.is_empty() {
+        return None;
+    }
+    let want = CRYPTO_LAYERS[layer_idx.min(2)];
+    let layer = layers.iter().find(|l| l.as_str() == want || l.ends_with(want)).unwrap_or(&layers[0]).clone();
+    let idx = a.index_at(lx, ly)?;
+    let (id_f, _) = a
+        .crypto_ranks(&layer, idx)
+        .into_iter()
+        .filter(|(id, cov)| *cov > 0.0 && id.to_bits() != 0)
+        .max_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal))?;
+    let hash = id_f.to_bits();
+    let manifest = a.manifests.iter().find(|(l, _)| *l == layer).map(|(_, m)| m.as_slice());
+    let picked = manifest.and_then(|m| m.iter().find(|(_, h)| *h == hash).map(|(n, _)| n.clone())).unwrap_or_else(|| format!("<{hash:08x}>"));
+    let matches_picked = |entry: &str| -> bool { entry == picked || (!entry.contains('*') && selection_hashes(entry, manifest).contains(&hash)) };
+    let mut items: Vec<String> = selection_names(current).into_iter().filter(|s| !s.is_empty()).collect();
+    match mode {
+        "add" => {
+            if !items.iter().any(|e| matches_picked(e)) {
+                items.push(picked.clone());
+            }
+        }
+        "remove" => {
+            items.retain(|e| !matches_picked(e));
+        }
+        _ => {
+            items = vec![picked.clone()];
+        }
+    }
+    let updated = items.iter().map(|s| format_selection_item(s)).collect::<Vec<_>>().join(", ");
+    Some((picked, updated))
+}
+
 /// Rank planes as [`AuxChannels::crypto_rank_planes`] returns them.
 type RankPlanes<'a> = [(&'a [f32], &'a [f32])];
 
@@ -541,7 +588,7 @@ pub fn specs() -> Vec<EffectSpec> {
             vec![
                 p("layer", "Layer", Value::Enum(0), popup(&CRYPTO_LAYERS)),
                 text("selection", "Selection", ""),
-                p("display", "Display", Value::Enum(2), popup(&["Colors", "Matte", "Preview"])),
+                p("display", "Display", Value::Enum(0), popup(&["Colors", "Matte", "Preview"])),
                 p("matteOnly", "Matte Only", Value::Bool(false), ParamUi::Checkbox),
             ],
             cryptomatte,
@@ -913,6 +960,27 @@ mod tests {
         assert_eq!(selection_names("Bob's mat, ring"), vec!["Bob's mat", "ring"]);
         assert_eq!(selection_names(r#""Green, Glossy"#), vec!["Green, Glossy"]);
         assert_eq!(selection_names(r#"say \"hi\""#), vec![r#"say "hi""#]);
+    }
+
+    #[test]
+    fn pick_cryptomatte_at_replaces_adds_and_removes_ids() {
+        let h = scene();
+        let a = &h.0;
+        // At (2, 5) the dominant object is "left"; at (12, 5) it is "right".
+        let (picked, sel) = pick_cryptomatte_at(a, 0, 2.0, 5.0, "", "replace").unwrap();
+        assert_eq!(picked, "left");
+        assert_eq!(sel, "left");
+
+        // Shift+Click ("add") appends "right" without duplicating existing items.
+        let (picked2, sel2) = pick_cryptomatte_at(a, 0, 12.0, 5.0, &sel, "add").unwrap();
+        assert_eq!(picked2, "right");
+        assert_eq!(sel2, "left, right");
+        let (_, sel_dup) = pick_cryptomatte_at(a, 0, 2.0, 5.0, &sel2, "add").unwrap();
+        assert_eq!(sel_dup, "left, right");
+
+        // Alt+Click ("remove") removes "left" and leaves "right".
+        let (_, sel3) = pick_cryptomatte_at(a, 0, 2.0, 5.0, &sel2, "remove").unwrap();
+        assert_eq!(sel3, "right");
     }
 
     #[test]

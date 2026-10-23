@@ -91,7 +91,7 @@ pub struct Property {
 
 impl Property {
     pub fn new(uid: Uid, match_id: &str, name: &str, value: Value) -> Property {
-        let hold_only = !value.interpolates();
+        let hold_only = !value.interpolates() && match_id != "distortionMesh";
         Property {
             uid,
             match_id: match_id.into(),
@@ -137,6 +137,15 @@ impl Property {
             let mut k = Keyframe::new(t, v);
             if self.hold_only {
                 k = k.hold();
+            } else if self.match_id == "distortionMesh"
+                && self
+                    .keys
+                    .iter()
+                    .any(|ek| ek.auto_bezier || ek.in_interp == effectcraft_keyframe::Interp::Bezier || ek.out_interp == effectcraft_keyframe::Interp::Bezier)
+            {
+                k.in_interp = effectcraft_keyframe::Interp::Bezier;
+                k.out_interp = effectcraft_keyframe::Interp::Bezier;
+                k.auto_bezier = true;
             }
             effectcraft_keyframe::set_key(&mut self.keys, k);
         }

@@ -73,6 +73,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let held = ui.data(|d| d.get_temp::<egui::Id>(held_id)) == Some(id);
         if resp.clicked() && !held {
             app.ui.tool = cur;
+            app.ui.fx_liquify_brush.clear();
+            app.ui.fx_pick = None;
         }
         // Ctrl+double-click Pan Behind: Center Anchor Point in Layer Content.
         if cur == Tool::PanBehind
@@ -107,6 +109,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.auto.add(&format!("tools.select.{tool:?}"), row.rect, tool.label());
                     if row.clicked() {
                         app.ui.tool = *tool;
+                        app.ui.fx_liquify_brush.clear();
+                        app.ui.fx_pick = None;
                         if let Some(saved) = app.ui.slot_tools.get_mut(si) {
                             *saved = *tool;
                         }

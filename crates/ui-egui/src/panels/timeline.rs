@@ -373,21 +373,25 @@ impl Vis {
         }
     }
     /// Width of every visible column but the name.
-    fn fixed(&self) -> f32 {
+    fn fixed(&self, tl: &crate::state::TimelineState) -> f32 {
         let w = |on: bool, w: f32| if on { w } else { 0.0 };
         w(self.av, AV_W)
             + w(self.keys, KEYS_W)
             + w(self.label, LABEL_W)
             + w(self.num, NUM_W)
-            + w(self.comment, COMMENT_W)
+            + w(self.comment, tl_col_w(tl, "comment", COMMENT_W))
             + w(self.switches, SW * 8.0 + 6.0)
-            + w(self.modes, MODES_W)
-            + w(self.parent, PARENT_W)
-            + w(self.in_, TIME_W)
-            + w(self.out, TIME_W)
-            + w(self.duration, TIME_W)
-            + w(self.stretch, STRETCH_W)
+            + w(self.modes, tl_col_w(tl, "modes", MODES_W))
+            + w(self.parent, tl_col_w(tl, "parent", PARENT_W))
+            + w(self.in_, tl_col_w(tl, "in", TIME_W))
+            + w(self.out, tl_col_w(tl, "out", TIME_W))
+            + w(self.duration, tl_col_w(tl, "duration", TIME_W))
+            + w(self.stretch, tl_col_w(tl, "stretch", STRETCH_W))
     }
+}
+
+fn tl_col_w(tl: &crate::state::TimelineState, id: &str, default_w: f32) -> f32 {
+    tl.col_widths.get(id).copied().unwrap_or(default_w).max(44.0)
 }
 
 struct Cols {
@@ -400,19 +404,37 @@ struct Cols {
     /// End of the name column.
     name_end: f32,
     comment: f32,
+    comment_w: f32,
     switches: f32,
     mode: f32,
+    mode_w: f32,
     trkmat: f32,
+    trkmat_w: f32,
     parent: f32,
+    parent_w: f32,
     in_: f32,
+    in_w: f32,
     out: f32,
+    out_w: f32,
     duration: f32,
+    duration_w: f32,
     stretch: f32,
+    stretch_w: f32,
     end: f32,
 }
 
-fn cols(x0: f32, width: f32, vis: Vis) -> Cols {
-    let name_w = (width - vis.fixed()).max(120.0);
+fn cols(x0: f32, width: f32, vis: Vis, tl: &crate::state::TimelineState) -> Cols {
+    let fixed = vis.fixed(tl);
+    let name_w = tl.col_widths.get("name").copied().unwrap_or_else(|| (width - fixed).max(120.0)).max(80.0);
+    let comment_w = tl_col_w(tl, "comment", COMMENT_W);
+    let modes_w = tl_col_w(tl, "modes", MODES_W).max(140.0);
+    let mode_w = 92.0;
+    let trkmat_w = (modes_w - mode_w).max(60.0);
+    let parent_w = tl_col_w(tl, "parent", PARENT_W);
+    let in_w = tl_col_w(tl, "in", TIME_W);
+    let out_w = tl_col_w(tl, "out", TIME_W);
+    let duration_w = tl_col_w(tl, "duration", TIME_W);
+    let stretch_w = tl_col_w(tl, "stretch", STRETCH_W);
     let mut x = x0;
     let mut next = |on: bool, w: f32| {
         let at = x;
@@ -426,17 +448,43 @@ fn cols(x0: f32, width: f32, vis: Vis) -> Cols {
     let label = next(vis.label, LABEL_W);
     let num = next(vis.num, NUM_W);
     let name = next(true, name_w);
-    let comment = next(vis.comment, COMMENT_W);
+    let comment = next(vis.comment, comment_w);
     let switches = next(vis.switches, SW * 8.0 + 6.0);
-    let mode = next(vis.modes, 92.0);
-    let trkmat = next(vis.modes, 112.0);
-    let parent = next(vis.parent, PARENT_W);
-    let in_ = next(vis.in_, TIME_W);
-    let out = next(vis.out, TIME_W);
-    let duration = next(vis.duration, TIME_W);
-    let stretch = next(vis.stretch, STRETCH_W);
+    let mode = next(vis.modes, mode_w);
+    let trkmat = next(vis.modes, trkmat_w);
+    let parent = next(vis.parent, parent_w);
+    let in_ = next(vis.in_, in_w);
+    let out = next(vis.out, out_w);
+    let duration = next(vis.duration, duration_w);
+    let stretch = next(vis.stretch, stretch_w);
     let end = next(true, 0.0);
-    Cols { vis, av, keys, label, num, name, name_end: name + name_w, comment, switches, mode, trkmat, parent, in_, out, duration, stretch, end }
+    Cols {
+        vis,
+        av,
+        keys,
+        label,
+        num,
+        name,
+        name_end: name + name_w,
+        comment,
+        comment_w,
+        switches,
+        mode,
+        mode_w,
+        trkmat,
+        trkmat_w,
+        parent,
+        parent_w,
+        in_,
+        in_w,
+        out,
+        out_w,
+        duration,
+        duration_w,
+        stretch,
+        stretch_w,
+        end,
+    }
 }
 
 /// Which column a header x position falls in.
@@ -448,14 +496,14 @@ fn column_at(cw: &Cols, x: f32) -> Option<&'static str> {
         ("label", v.label, cw.label, cw.label + LABEL_W),
         ("num", v.num, cw.num, cw.num + NUM_W),
         ("name", true, cw.name, cw.name_end),
-        ("comment", v.comment, cw.comment, cw.comment + COMMENT_W),
+        ("comment", v.comment, cw.comment, cw.comment + cw.comment_w),
         ("switches", v.switches, cw.switches, cw.switches + SW * 8.0 + 6.0),
-        ("modes", v.modes, cw.mode, cw.mode + MODES_W),
-        ("parent", v.parent, cw.parent, cw.parent + PARENT_W),
-        ("in", v.in_, cw.in_, cw.in_ + TIME_W),
-        ("out", v.out, cw.out, cw.out + TIME_W),
-        ("duration", v.duration, cw.duration, cw.duration + TIME_W),
-        ("stretch", v.stretch, cw.stretch, cw.stretch + STRETCH_W),
+        ("modes", v.modes, cw.mode, cw.mode + cw.mode_w + cw.trkmat_w),
+        ("parent", v.parent, cw.parent, cw.parent + cw.parent_w),
+        ("in", v.in_, cw.in_, cw.in_ + cw.in_w),
+        ("out", v.out, cw.out, cw.out + cw.out_w),
+        ("duration", v.duration, cw.duration, cw.duration + cw.duration_w),
+        ("stretch", v.stretch, cw.stretch, cw.stretch + cw.stretch_w),
     ];
     spans.into_iter().find(|(_, on, a, b)| *on && x >= *a && x < *b).map(|s| s.0)
 }
@@ -697,7 +745,7 @@ fn group_visible(g: &PropGroup, layer: &Layer) -> bool {
 }
 
 fn prop_visible(p: &Property, layer: &Layer) -> bool {
-    if matches!(p.ui, ParamUi::Hidden) {
+    if matches!(p.ui, ParamUi::Hidden) && p.match_id != "distortionMesh" {
         return false;
     }
     // Path Options show only the Path popup until a mask path is chosen.
@@ -1428,14 +1476,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let colhdr_h = 22.0;
     let footer_h = 24.0;
     let vis = Vis::of(&app.ui.timeline);
-    let left_w = (vis.fixed() + 190.0).clamp(420.0, (rect.width() * 0.72).max(420.0));
+    let fixed_w = vis.fixed(&app.ui.timeline);
+    let name_pref_w = app.ui.timeline.col_widths.get("name").copied().unwrap_or(190.0);
+    let natural_w = fixed_w + name_pref_w;
+    let max_left_w = (rect.width() * 0.85).max(420.0);
+    let left_w = app.ui.timeline.custom_left_w.unwrap_or_else(|| natural_w.clamp(420.0, (rect.width() * 0.72).max(420.0))).clamp(320.0, max_left_w);
     // Columns wider than the pane scroll horizontally (Shift+wheel / trackpad over the outline,
     // or the scroll bar above the footer); the name column keeps its minimum width.
-    let natural_w = vis.fixed() + 190.0;
     let overflow = (natural_w - left_w).max(0.0);
     app.ui.timeline.outline_scroll = app.ui.timeline.outline_scroll.clamp(0.0, overflow);
     let oscroll = app.ui.timeline.outline_scroll;
-    let cw = cols(rect.min.x - oscroll, left_w + overflow, vis);
+    let cw = cols(rect.min.x - oscroll, left_w + overflow, vis, &app.ui.timeline);
     let graph_x0 = rect.min.x + left_w + 1.0;
     let graph_x1 = rect.max.x - GUTTER_W;
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("timeline-graph-area"), (graph_x0, graph_x1 - graph_x0)));
@@ -1831,6 +1882,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let hdr_rect = Rect::from_min_max(ch.min, pos2(graph_x0 - 1.0, ch.max.y));
     let hresp = ui.interact(hdr_rect, egui::Id::new("tl-colhdr"), Sense::click());
     app.auto.add("timeline.header", hdr_rect, "Columns (right-click)");
+    let mut divider_active = false;
     for (id, label) in COLUMNS {
         if let Some(x0) = match id {
             "av" => vis.av.then_some((cw.av, AV_W)),
@@ -1838,19 +1890,67 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             "label" => vis.label.then_some((cw.label, LABEL_W)),
             "num" => vis.num.then_some((cw.num, NUM_W)),
             "name" => Some((cw.name, cw.name_end - cw.name)),
-            "comment" => vis.comment.then_some((cw.comment, COMMENT_W)),
+            "comment" => vis.comment.then_some((cw.comment, cw.comment_w)),
             "switches" => vis.switches.then_some((cw.switches, SW * 8.0 + 6.0)),
-            "modes" => vis.modes.then_some((cw.mode, MODES_W)),
-            "parent" => vis.parent.then_some((cw.parent, PARENT_W)),
-            "in" => vis.in_.then_some((cw.in_, TIME_W)),
-            "out" => vis.out.then_some((cw.out, TIME_W)),
-            "duration" => vis.duration.then_some((cw.duration, TIME_W)),
-            _ => vis.stretch.then_some((cw.stretch, STRETCH_W)),
+            "modes" => vis.modes.then_some((cw.mode, cw.mode_w + cw.trkmat_w)),
+            "parent" => vis.parent.then_some((cw.parent, cw.parent_w)),
+            "in" => vis.in_.then_some((cw.in_, cw.in_w)),
+            "out" => vis.out.then_some((cw.out, cw.out_w)),
+            "duration" => vis.duration.then_some((cw.duration, cw.duration_w)),
+            _ => vis.stretch.then_some((cw.stretch, cw.stretch_w)),
         } {
             app.auto.add(&format!("timeline.header.{id}"), Rect::from_min_size(pos2(x0.0, ch.min.y), vec2(x0.1, colhdr_h)), label);
+            let div_x = x0.0 + x0.1;
+            if div_x > ch.min.x + 4.0 && div_x <= graph_x0 {
+                hp.line_segment([pos2(div_x, ch.min.y + 4.0), pos2(div_x, ch.max.y - 4.0)], Stroke::new(1.0, t.separator));
+            }
+            if matches!(id, "name" | "comment" | "modes" | "parent" | "in" | "out" | "duration" | "stretch") && div_x >= ch.min.x && div_x <= graph_x0 + 3.0 {
+                let div_rect = Rect::from_min_max(pos2(div_x - 3.0, ch.min.y), pos2(div_x + 3.0, ch.max.y));
+                let dresp = ui.interact(div_rect, egui::Id::new(("tl-col-resize", id)), Sense::drag());
+                app.auto.add(&format!("timeline.header.{id}.resize"), div_rect, "Resize column");
+                if dresp.hovered() || dresp.dragged() {
+                    divider_active = true;
+                    ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if dresp.dragged() {
+                    let dx = dresp.drag_delta().x;
+                    if dx.abs() > 0.0 {
+                        let min_w = match id {
+                            "name" => 80.0,
+                            "modes" => 140.0,
+                            _ => 48.0,
+                        };
+                        let cur_w = x0.1;
+                        let new_w = (cur_w + dx).max(min_w);
+                        let actual_dx = new_w - cur_w;
+                        app.ui.timeline.col_widths.insert(id.to_string(), new_w);
+                        if actual_dx.abs() > 0.0 {
+                            app.ui.timeline.custom_left_w = Some((left_w + actual_dx).clamp(320.0, max_left_w));
+                        }
+                    }
+                }
+            }
         }
     }
-    if hresp.clicked()
+    let split_rect = Rect::from_min_max(pos2(graph_x0 - 4.0, ch.min.y), pos2(graph_x0 + 3.0, ch.max.y));
+    let sresp = ui.interact(split_rect, egui::Id::new("tl-outline-split"), Sense::drag());
+    app.auto.add("timeline.header.split", split_rect, "Resize outline");
+    if sresp.hovered() || sresp.dragged() {
+        divider_active = true;
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if sresp.dragged() {
+        let dx = sresp.drag_delta().x;
+        if dx.abs() > 0.0 {
+            let new_left = (left_w + dx).clamp(320.0, max_left_w);
+            app.ui.timeline.custom_left_w = Some(new_left);
+            if let Some(nw) = app.ui.timeline.col_widths.get_mut("name") {
+                *nw = (*nw + (new_left - left_w)).max(80.0);
+            }
+        }
+    }
+    if !divider_active
+        && hresp.clicked()
         && let Some(pt) = hresp.interact_pointer_pos()
         && column_at(&cw, pt.x) == Some("name")
     {
@@ -2166,7 +2266,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         actions.push(("layer.setSwitch".into(), json!({"layers": [layer.id.0], "switch": "preserveTransparency"})));
                     }
                     // Track matte: layer picker + kind.
-                    let mr = Rect::from_min_size(pos2(cw.trkmat + 2.0, cy - 9.0), vec2(104.0, 18.0));
+                    let mr = Rect::from_min_size(pos2(cw.trkmat + 2.0, cy - 9.0), vec2((cw.trkmat_w - 8.0).max(60.0), 18.0));
                     let label = match layer.track_matte {
                         Some(m) => comp.layer(m.layer).map(|l| format!("{} {}", idx_of(l.id), l.name)).unwrap_or("None".into()),
                         None => "No Track Matte".into(),
@@ -2217,7 +2317,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         "Parent pick whip",
                         crate::i18n::tr("Parent pick whip: drag onto a layer"),
                     );
-                    let pr_rect = Rect::from_min_size(pos2(cw.parent + 20.0, cy - 9.0), vec2(94.0, 18.0));
+                    let pr_rect = Rect::from_min_size(pos2(cw.parent + 20.0, cy - 9.0), vec2((cw.parent_w - 22.0).max(50.0), 18.0));
                     let plabel = layer.parent.and_then(|p| comp.layer(p)).map(|l| format!("{}. {}", idx_of(l.id), l.name)).unwrap_or_else(|| "None".into());
                     let presp = widgets::dropdown(ui, pr_rect, &plabel, &t, egui::Id::new(("parent", layer.id.0)));
                     app.auto.add(&format!("timeline.layer.{}.parent", layer.id.0), pr_rect, "Parent");
@@ -3356,6 +3456,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rows_rect))
     {
         let released = ctx.input(|i| i.pointer.any_released());
+        let alt = ctx.input(|i| i.modifiers.alt);
         if matches!(payload.as_ref(), crate::panels::DragPayload::Effect(_) | crate::panels::DragPayload::Preset { .. }) {
             let target = hit_rows.iter().find(|(r, _)| ptr.y >= r.min.y && ptr.y < r.max.y).map(|(_, row)| row.layer);
             // The layer the effect would land on (its row and its open properties) is the one
@@ -3378,6 +3479,28 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     _ => {}
                 }
+            }
+        } else if let crate::panels::DragPayload::Item(id) = payload.as_ref()
+            && alt
+        {
+            let hovered = hit_rows.iter().find(|(r, _)| ptr.y >= r.min.y && ptr.y < r.max.y).map(|(_, row)| row.layer);
+            let targets: Vec<LayerId> = match hovered {
+                Some(l) if selected.contains(&l) => selected.clone(),
+                Some(l) => vec![l],
+                None => selected.clone(),
+            };
+            let rp = p.with_clip_rect(rows_rect);
+            for l in &targets {
+                if let Some(span) = hit_rows.iter().filter(|(_, row)| row.layer == *l).map(|(r, _)| *r).reduce(|a, b| a.union(b)) {
+                    let lit = span.intersect(rows_rect);
+                    rp.rect_filled(lit, 0.0, t.accent.gamma_multiply(0.18));
+                    rp.rect_stroke(lit, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+                    app.auto.add("timeline.replaceTarget", lit, "Replace target layer");
+                }
+            }
+            if released && !targets.is_empty() {
+                let layer_ids: Vec<u64> = targets.iter().map(|l| l.0).collect();
+                actions.push(("layer.replaceSource".into(), json!({"layers": layer_ids, "item": *id})));
             }
         } else {
             let layer_rows: Vec<(Rect, LayerId)> = hit_rows.iter().filter(|(_, r)| matches!(r.kind, RowKind::Layer)).map(|(rr, r)| (*rr, r.layer)).collect();
@@ -3507,7 +3630,7 @@ fn layer_cells(
     let ctx = ui.ctx().clone();
     let lid = layer.id.0;
     if cw.vis.comment {
-        let cr = Rect::from_min_max(pos2(cw.comment + 4.0, r.min.y + 1.0), pos2(cw.comment + COMMENT_W - 4.0, r.max.y - 1.0));
+        let cr = Rect::from_min_max(pos2(cw.comment + 4.0, r.min.y + 1.0), pos2(cw.comment + cw.comment_w - 4.0, r.max.y - 1.0));
         let edit_id = egui::Id::new("tl-comment-edit");
         let editing: Option<(u64, String)> = ctx.data(|d| d.get_temp(edit_id));
         app.auto.add(&format!("timeline.layer.{lid}.comment"), cr, &layer.comment);
@@ -3533,15 +3656,15 @@ fn layer_cells(
     }
     let fd = comp.frame_duration().seconds();
     let cells = [
-        (cw.vis.in_, cw.in_, "in", layer.in_point.seconds()),
-        (cw.vis.out, cw.out, "out", layer.out_point.seconds()),
-        (cw.vis.duration, cw.duration, "duration", (layer.out_point - layer.in_point).seconds()),
+        (cw.vis.in_, cw.in_, cw.in_w, "in", layer.in_point.seconds()),
+        (cw.vis.out, cw.out, cw.out_w, "out", layer.out_point.seconds()),
+        (cw.vis.duration, cw.duration, cw.duration_w, "duration", (layer.out_point - layer.in_point).seconds()),
     ];
-    for (on, x, kind, secs) in cells {
+    for (on, x, w, kind, secs) in cells {
         if !on {
             continue;
         }
-        let cr = Rect::from_min_max(pos2(x + 2.0, r.min.y + 1.0), pos2(x + TIME_W - 2.0, r.max.y - 1.0));
+        let cr = Rect::from_min_max(pos2(x + 2.0, r.min.y + 1.0), pos2(x + w - 2.0, r.max.y - 1.0));
         let tc = crate::panels::timecode(&app.session, comp, Tick::from_seconds_f64(secs) - if kind == "duration" { comp.display_start } else { Tick(0) });
         let resp = ui.interact(cr, egui::Id::new(("tl-cell", kind, lid)), Sense::drag()).on_hover_text(crate::i18n::tr("Drag to change"));
         lp.text(pos2(cr.min.x + 4.0, cy), Align2::LEFT_CENTER, &tc, Tokens::mono(11.0), if resp.hovered() || resp.dragged() { t.hot_text } else { t.timecode });
@@ -3572,7 +3695,7 @@ fn layer_cells(
         }
     }
     if cw.vis.stretch {
-        let cr = Rect::from_min_max(pos2(cw.stretch + 2.0, r.min.y + 1.0), pos2(cw.stretch + STRETCH_W - 2.0, r.max.y - 1.0));
+        let cr = Rect::from_min_max(pos2(cw.stretch + 2.0, r.min.y + 1.0), pos2(cw.stretch + cw.stretch_w - 2.0, r.max.y - 1.0));
         let label = format!("{:.1}%", layer.stretch * 100.0);
         let resp = ui.interact(cr, egui::Id::new(("tl-stretch", lid)), Sense::click()).on_hover_text(crate::i18n::tr("Time Stretch…"));
         lp.text(pos2(cr.min.x + 4.0, cy), Align2::LEFT_CENTER, &label, Tokens::ui(11.5), if resp.hovered() { t.hot_text } else { t.text });

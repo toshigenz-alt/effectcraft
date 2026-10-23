@@ -421,6 +421,12 @@ pub struct TimelineState {
     /// The name column shows Source Name instead of Layer Name (click its header).
     #[serde(default)]
     pub source_name: bool,
+    /// User-resized Timeline column widths (`name`, `comment`, `parent`, `in`, `out`, `duration`, `stretch`).
+    #[serde(default)]
+    pub col_widths: BTreeMap<String, f32>,
+    /// User-resized Timeline outline pane width (`None` = automatic from columns).
+    #[serde(default)]
+    pub custom_left_w: Option<f32>,
     /// A pending scroll, applied when the Timeline is next drawn.
     #[serde(skip)]
     pub scroll_to: Option<ScrollTo>,
@@ -467,6 +473,8 @@ impl Default for TimelineState {
             unlinked: BTreeSet::new(),
             columns: default_tl_columns(),
             source_name: false,
+            col_widths: BTreeMap::new(),
+            custom_left_w: None,
             scroll_to: None,
         }
     }
@@ -617,6 +625,9 @@ pub struct UiState {
     /// `duration`, `path`, `comment`); toggled from the column header's context menu.
     #[serde(default = "default_project_columns")]
     pub project_columns: Vec<String>,
+    /// User-resized Project panel column widths (`name`, `type`, `size`, `duration`, `fps`, `path`, `comment`).
+    #[serde(default)]
+    pub project_col_widths: BTreeMap<String, f32>,
     /// Horizontal scroll of the Project panel's optional columns (Name and Label stay put).
     #[serde(default)]
     pub project_hscroll: f32,
@@ -643,6 +654,15 @@ pub struct UiState {
     /// Levels (Individual Controls) editor: shown channel per effect uid.
     #[serde(default)]
     pub fx_levels_channel: BTreeMap<u64, usize>,
+    /// Liquify effect instances whose viewer brush mode is armed, by effect uid.
+    #[serde(default)]
+    pub fx_liquify_brush: BTreeSet<u64>,
+    /// Liquify brush and relax speed multiplier (1.0 = default).
+    #[serde(default = "default_liquify_speed")]
+    pub fx_liquify_speed: f64,
+    /// Liquify keyframe interpolation mode: true = Smooth, false = Linear.
+    #[serde(default = "default_liquify_smooth")]
+    pub fx_liquify_smooth: bool,
     /// Effects & Presets: recently applied effect ids, most recent first.
     #[serde(default)]
     pub effects_recent: Vec<String>,
@@ -724,6 +744,7 @@ impl Default for UiState {
             project_hscroll: 0.0,
             project_scroll: 0.0,
             project_columns: default_project_columns(),
+            project_col_widths: BTreeMap::new(),
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),
             fx_pick: None,
@@ -731,6 +752,9 @@ impl Default for UiState {
             fx_curve_channel: BTreeMap::new(),
             fx_curve_pencil: BTreeSet::new(),
             fx_levels_channel: BTreeMap::new(),
+            fx_liquify_brush: BTreeSet::new(),
+            fx_liquify_speed: 1.0,
+            fx_liquify_smooth: false,
             effects_recent: Vec::new(),
             effects_view: EffectsView::default(),
             snapping: true,
@@ -750,4 +774,12 @@ impl Default for UiState {
             scopes: Default::default(),
         }
     }
+}
+
+fn default_liquify_speed() -> f64 {
+    1.0
+}
+
+fn default_liquify_smooth() -> bool {
+    false
 }
