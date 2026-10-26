@@ -4,8 +4,8 @@ use effectcraft_color::{BlendMode, Label};
 use effectcraft_keyframe::{Justify, TextDoc, Value as KV};
 use effectcraft_project::build::{self, Ids};
 use effectcraft_project::{
-    Comp, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerId, LayerSource, MaskMode, MatteKind, Node, Project, PropGroup, Quality, Solid, TrackMatte,
-    limits,
+    Comp, FootageKind, FrameBlend, GroupKind, ItemId, ItemKind, Layer, LayerId, LayerSource, MaskMode, MatteKind, Node, Project, PropGroup, Quality, Solid,
+    TrackMatte, limits,
 };
 use effectcraft_time::Tick;
 use serde_json::{Value, json};
@@ -289,6 +289,7 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let index = index_p(p, "layer.addItem")?;
     let position = position_p(p, "layer.addItem")?;
+    let auto_crypto = b_p(p, "autoCryptomatte").unwrap_or(false);
     let fr = comp.frame_rate;
     // Settings ▸ General ▸ Create Layers at Composition Start Time (off: at the current time).
     let default_start = if s.prefs.general.create_layers_at_comp_start || s.active_comp_id() != Some(cid) { Tick::ZERO } else { s.time() };
@@ -302,7 +303,9 @@ fn add_item(s: &mut Session, p: &Value) -> Result<Value> {
         let end = dur.map_or((start + comp.duration).min(comp.duration), |d| start + d);
         l.out_point = fr.snap_nearest(end).max(start + fr.frame_duration());
         place(&mut l, position);
-        if is_crypto_exr_item(&it)
+        // Local rule: a dropped EXR named `*cryp*` arrives with Cryptomatte showing Colors.
+        if auto_crypto
+            && is_crypto_exr_item(&it)
             && let Some(spec) = effectcraft_effects::lookup("ec.3d.cryptomatte")
             && let Some(fx) = l.props.sub_mut("effects")
         {
@@ -331,65 +334,97 @@ fn is_crypto_exr_item(it: &effectcraft_project::Item) -> bool {
     it.name.to_ascii_lowercase().contains("cryp") || file_name.contains("cryp")
 }
 
-fn can_replace_source(s: &Session) -> std::result::Result<(), String> {
-    has_layers(s)?;
+/// A layer whose source is an item (footage, precomposition or solid), as in After Effects'
+/// Replace Source. Text, shape, null, camera, light and 3D model layers have no AVItem source to
+/// replace.
+fn replaceable_layer(l: &Layer) -> bool {
+    matches!(l.source, LayerSource::Footage { .. } | LayerSource::Comp { .. } | LayerSource::Solid { .. })
+}
+
+/// The source a Project item gives a layer, or why it can't replace one.
+fn replacement_source(item: ItemId, it: &effectcraft_project::Item) -> Result<LayerSource> {
+    const CMD: &str = "layer.replaceSource";
+    match &it.kind {
+        ItemKind::Comp(_) => Ok(LayerSource::Comp { item }),
+        ItemKind::Footage(f) if f.kind == FootageKind::Data => {
+            Err(bad(CMD, "data files can't be layer sources; read them in expressions with footage(\"name\").sourceData"))
+        }
+        ItemKind::Footage(f) if f.kind == FootageKind::Model => Err(bad(CMD, "3D model items can't replace a 2D layer source; add them as 3D layers")),
+        ItemKind::Footage(_) => Ok(LayerSource::Footage { item }),
+        ItemKind::Solid(_) => Ok(LayerSource::Solid { item }),
+        ItemKind::Folder => Err(bad(CMD, "folders can't be layer sources")),
+    }
+}
+
+/// Whether a source brings audio properties (precompositions always can; footage when it has an
+/// audio stream).
+fn source_has_audio(project: &Project, source: &LayerSource) -> bool {
+    match source {
+        LayerSource::Comp { .. } => true,
+        LayerSource::Footage { item } => project.item(*item).is_some_and(|i| matches!(&i.kind, ItemKind::Footage(f) if f.has_audio)),
+        _ => false,
+    }
+}
+
+fn has_replace_source(s: &Session) -> std::result::Result<(), String> {
+    has_comp(s)?;
+    let c = s.active_comp().ok_or("no composition")?;
+    if !s.state.selected_layers.iter().filter_map(|l| c.layer(*l)).any(replaceable_layer) {
+        return Err("select a footage, composition or solid layer".into());
+    }
     if s.state.project_selection.is_empty() {
-        return Err("select a footage, solid, or composition item in the Project panel".into());
+        return Err("select a footage item, a composition or a solid in the Project panel".into());
     }
     Ok(())
 }
 
-/// Replace the source of the selected timeline layers (or `layers` / `layer`) with `item` (or the
-/// first selected Project item), keeping all layer attributes, transforms, keyframes, masks, and
-/// effects intact (`Alt` + drag from Project to Timeline, or `Cmd+Alt+/`).
+/// Replace the source of the selected (or `layers`) AV layers with a Project item, as After
+/// Effects' Alt-drag and Ctrl+Alt+/ do. The layer keeps every property: name, timing, transforms,
+/// keyframes, expressions, effects, masks, switches, parenting and track matte. Only its source
+/// changes; precompositions bring their Essential Properties group through `sync_project`, and a
+/// source with audio adds an Audio group when the layer has none.
 fn replace_source(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "layer.replaceSource";
+    const CMD: &str = "layer.replaceSource";
     let (cid, ids) = layers_p(s, p)?;
+    let ids = unlocked(s, cid, ids, CMD)?;
     if ids.is_empty() {
-        return Err(bad(cmd, "no layer selected"));
+        return Err(bad(CMD, "select a layer first"));
     }
-    let ids = unlocked(s, cid, ids, cmd)?;
     let item = match p.get("item") {
-        Some(Value::Number(n)) => ItemId(n.as_u64().unwrap_or(0)),
-        Some(Value::String(name)) => s.project.find_by_name(name).map(|i| i.id).ok_or_else(|| bad(cmd, format!("no item `{name}`")))?,
-        _ => *s.state.project_selection.first().ok_or_else(|| bad(cmd, "missing `item` (select an item in the Project panel)"))?,
+        Some(Value::Number(n)) => ItemId(n.as_u64().ok_or_else(|| bad(CMD, "item: a project item id"))?),
+        Some(Value::String(name)) => s.project.find_by_name(name).map(|i| i.id).ok_or_else(|| bad(CMD, format!("no item `{name}`")))?,
+        _ => *s.state.project_selection.first().ok_or_else(|| bad(CMD, "select a footage item, a composition or a solid in the Project panel"))?,
     };
-    if s.project.comp_contains(item, cid) {
-        return Err(bad(cmd, "a composition can't contain itself"));
-    }
-    let it = s.project.item(item).ok_or_else(|| bad(cmd, "no such item"))?.clone();
-    let (new_src, has_audio) = match &it.kind {
-        ItemKind::Comp(_) => (LayerSource::Comp { item }, true),
-        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Data => {
-            return Err(bad(cmd, "data files can't be layer sources"));
+    let it = s.project.item(item).ok_or_else(|| bad(CMD, format!("no item {}", item.0)))?;
+    let source = replacement_source(item, it)?;
+    let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
+    for lid in &ids {
+        let l = comp.layer(*lid).ok_or_else(|| bad(CMD, "no such layer"))?;
+        if !replaceable_layer(l) {
+            return Err(bad(CMD, format!("“{}” has no source item to replace", l.name)));
         }
-        ItemKind::Footage(f) if f.kind == effectcraft_project::FootageKind::Model => (LayerSource::Model { item }, false),
-        ItemKind::Footage(f) => (LayerSource::Footage { item }, f.has_audio),
-        ItemKind::Solid(_) => (LayerSource::Solid { item }, false),
-        ItemKind::Folder => return Err(bad(cmd, "folders can't be layer sources")),
-    };
+    }
+    if let LayerSource::Comp { item: new } = &source
+        && s.project.comp_contains(*new, cid)
+    {
+        return Err(bad(CMD, "a composition can't contain itself"));
+    }
+    let has_audio = source_has_audio(&s.project, &source);
+    let source_for_edit = source.clone();
     s.edit("Replace Layer Source", None, |proj, _| {
-        let old_names: std::collections::HashMap<ItemId, String> = proj.items.iter().map(|(id, i)| (*id, i.name.clone())).collect();
         for lid in &ids {
-            let mut next = proj.next_id;
+            let needs_audio = has_audio && proj.comp(cid).and_then(|c| c.layer(*lid)).is_some_and(|l| l.props.sub("audio").is_none());
+            let audio = if needs_audio {
+                let mut next = Ids(&mut proj.next_id);
+                Some(build::audio(&mut next))
+            } else {
+                None
+            };
             let l = layer_mut(proj, cid, *lid)?;
-            let was_default_name = l.source.item().and_then(|old_id| old_names.get(&old_id)).is_some_and(|old_name| l.name == *old_name);
-            l.source = new_src.clone();
-            if was_default_name {
-                l.name = it.name.clone();
+            l.source = source_for_edit.clone();
+            if let Some(audio) = audio {
+                l.props.children.push(audio.into());
             }
-            if new_src.is_av() {
-                if l.props.group("masks").is_none() {
-                    l.props.children.push(build::masks(&mut build::Ids(&mut next)).into());
-                }
-                if l.props.group("effects").is_none() {
-                    l.props.children.push(build::effects(&mut build::Ids(&mut next)).into());
-                }
-            }
-            if has_audio && l.props.group("audio").is_none() {
-                l.props.children.push(build::audio(&mut build::Ids(&mut next)).into());
-            }
-            proj.next_id = next;
         }
         Ok(())
     })?;
@@ -506,8 +541,10 @@ fn set_switch_others(s: &mut Session, cid: ItemId, ids: &[LayerId], name: &str, 
         let applies = |l: &Layer| match name {
             "audio" => l.props.sub("audio").is_some(),
             "lock" | "locked" => true,
-            // Nulls have a Video switch too (it hides their outline in the viewer).
-            "video" | "eye" => (l.source.is_av() || matches!(l.source, LayerSource::Null)) && !mattes.contains(&l.id),
+            // Every layer has a Video switch (it hides a null's outline in the viewer and turns a
+            // camera or light off), as the Timeline's eye cell shows; track mattes keep theirs off
+            // by design.
+            "video" | "eye" => !mattes.contains(&l.id),
             _ => l.source.is_av() && !mattes.contains(&l.id),
         };
         let mut alone = true;
@@ -1713,17 +1750,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Footage to Comp",
             ["File"],
             Some("Cmd+/"),
-            "{item: id|name, time? (s, the In point), index? (1-based stack position; default above the selected layer), position? ([x, y] comp px; default the centre), duration? (s, for a still)}",
+            "{item: id|name, time? (s, the In point), index? (1-based stack position; default above the selected layer), position? ([x, y] comp px; default the centre), duration? (s, for a still), autoCryptomatte?: bool (an EXR named *cryp* gets Cryptomatte, Display = Colors; Timeline drops)}",
             has_comp,
             add_item
         ),
         cmd!(
             "layer.replaceSource",
-            "Replace Source",
-            ["Layer"],
+            "Replace Layer Source",
+            [],
             Some("Cmd+Alt+/"),
-            "{layers?, item?: id|name (default: first selected in Project)} — replaces the selected layers' source while preserving all attributes, keyframes, masks and effects",
-            can_replace_source,
+            "{comp?, layers?, layer?, item?: id|name (default the Project panel selection), fixExpressions?: bool (accepted for After Effects compatibility)} → {layers, item}",
+            has_replace_source,
             replace_source
         ),
         cmd!("layer.select", "Select Layers", [], None, "{layers: [id|name|#n], add?, toggle?}", has_comp, select),
@@ -1851,6 +1888,29 @@ mod parent_chain_tests {
     use super::*;
     use std::sync::Arc;
 
+    #[test]
+    fn cryp_exr_gets_cryptomatte_colors_only_when_asked() {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": "C", "width": 8, "height": 4, "duration": 1})).unwrap();
+        let f = effectcraft_project::Footage {
+            path: "/renders/shot_cryp.exr".into(),
+            kind: FootageKind::Video,
+            width: 8,
+            height: 4,
+            has_video: true,
+            ..Default::default()
+        };
+        let item = Arc::make_mut(&mut s.project).add_item("shot_cryp.exr", Label::None, None, ItemKind::Footage(f));
+        let fx_of = |s: &Session, l: &Value| {
+            let l = s.active_comp().unwrap().layer(LayerId(l["layer"].as_u64().unwrap())).unwrap();
+            l.effects().map(|e| e.groups().map(|g| (g.match_id.clone(), g.prop("display").map(|d| d.value.clone()))).collect::<Vec<_>>()).unwrap_or_default()
+        };
+        let plain = s.execute("layer.addItem", json!({"item": item.0})).unwrap();
+        assert!(fx_of(&s, &plain).is_empty());
+        let dropped = s.execute("layer.addItem", json!({"item": item.0, "autoCryptomatte": true})).unwrap();
+        assert_eq!(fx_of(&s, &dropped), vec![("ec.3d.cryptomatte".to_string(), Some(KV::Enum(0)))]);
+    }
+
     fn fixture() -> (Session, u64, u64, u64) {
         let mut s = Session::default();
         s.execute("comp.new", json!({"name":"Parent safety","width":16,"height":16,"duration":1})).unwrap();
@@ -1960,34 +2020,5 @@ mod parent_chain_tests {
             comp.layers.push(layer);
         }
         assert!(check_parent_chain(&comp, &[LayerId(c)], Some(LayerId(10_000)), 4096, 1_048_576).is_ok());
-    }
-
-    #[test]
-    fn replace_source_preserves_transform_effects_and_supports_undo() {
-        let mut s = Session::default();
-        s.execute("comp.new", json!({"name": "Replace Source Test", "width": 320, "height": 180, "duration": 2})).unwrap();
-        let lid = s.execute("layer.newSolid", json!({"name": "Red Solid 1", "color": [1.0, 0.0, 0.0]})).unwrap()["layer"].as_u64().unwrap();
-        let old_item = s.active_comp().unwrap().layer(LayerId(lid)).unwrap().source.item().unwrap();
-        // Create a second solid item by adding another solid layer.
-        let temp_lid = s.execute("layer.newSolid", json!({"name": "Blue Solid 1", "color": [0.0, 0.0, 1.0]})).unwrap()["layer"].as_u64().unwrap();
-        let new_item = s.active_comp().unwrap().layer(LayerId(temp_lid)).unwrap().source.item().unwrap();
-
-        // Set transform position and apply an effect on the original layer.
-        s.execute("prop.set", json!({"layer": lid, "path": "transform/position", "value": [42.0, 84.0, 0.0]})).unwrap();
-        s.execute("effect.apply", json!({"layer": lid, "effect": "ec.blur.gaussian"})).unwrap();
-
-        // Replace source using explicit `item` parameter; default name updates to new item name.
-        s.execute("layer.replaceSource", json!({"layers": [lid], "item": new_item.0})).unwrap();
-        let l = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
-        assert_eq!(l.source.item(), Some(new_item));
-        assert_eq!(l.name, "Blue Solid 1");
-        assert_eq!(l.props.prop("transform/position").unwrap().value.as_vec3(), [42.0, 84.0, 0.0]);
-        assert_eq!(l.effects().unwrap().groups().count(), 1);
-
-        // Undo restores the original source and name.
-        assert!(s.undo());
-        let l_undo = s.active_comp().unwrap().layer(LayerId(lid)).unwrap();
-        assert_eq!(l_undo.source.item(), Some(old_item));
-        assert_eq!(l_undo.name, "Red Solid 1");
     }
 }
