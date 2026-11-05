@@ -29,12 +29,16 @@ fn read_project(s: &Session, path: &str) -> Result<(Project, Option<String>)> {
 
 /// Footage paths stored in the imported project are resolved against its file
 /// ([`crate::doc_path::resolve_footage`]): relative ones become paths beside it, and items whose
-/// path is not followed are marked missing. Returns the footage paths that are missing, as stored.
-fn resolve_footage(s: &Session, project: &mut Project, path: &str) -> Vec<String> {
+/// path is not followed are marked missing. Local: footage a moved Collect Files folder names at
+/// its old place is found in the `(Footage)` folder beside the file
+/// ([`crate::doc_path::find_moved_collect_footage`]). Returns the footage paths that are missing,
+/// as stored, and how many items were found that way.
+fn resolve_footage(s: &Session, project: &mut Project, path: &str) -> (Vec<String>, usize) {
     let stored: std::collections::HashMap<ItemId, String> =
         project.items.values().filter_map(|i| if let ItemKind::Footage(f) = &i.kind { Some((i.id, f.path.clone())) } else { None }).collect();
     let refused = crate::doc_path::resolve_footage(project, Some(path));
     let services = s.services.clone();
+    let moved = crate::doc_path::find_moved_collect_footage(project, |_| true, Some(path), |q| services.exists(q));
     let exists = |p: &String| p.is_empty() || services.exists(p);
     let mut missing: Vec<String> = refused.iter().map(|(_, p, _)| p.clone()).collect();
     for it in project.items.values() {
@@ -48,7 +52,7 @@ fn resolve_footage(s: &Session, project: &mut Project, path: &str) -> Vec<String
             }
         }
     }
-    missing
+    (missing, moved)
 }
 
 /// The comps no other comp of `project` nests: the ones to open or place.
@@ -63,7 +67,7 @@ fn import_project(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut sub, saved_by) = read_project(s, &path)?;
     crate::upgrade_effects(&mut sub);
     let file = std::path::Path::new(&path);
-    let missing = resolve_footage(s, &mut sub, &path);
+    let (missing, moved) = resolve_footage(s, &mut sub, &path);
     s.stored_paths.add(&sub, Some(&path));
     // The imported project's own render queue stays behind (as for templates).
     let base = s.project.next_id;
@@ -99,10 +103,20 @@ fn import_project(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = saved_by.as_deref().filter(|v| effectcraft_project::is_newer_version(v, effectcraft_project::APP_VERSION)) {
         warnings.push(format!("saved by EffectCraft {v}, newer than this version ({})", effectcraft_project::APP_VERSION));
     }
+    // Local: say where footage was found when its stored place had gone.
+    let mut notes = vec![];
+    if moved > 0 {
+        notes.push(format!("{moved} footage item{} found in its (Footage) folder", if moved == 1 { "" } else { "s" }));
+    }
     if !missing.is_empty() {
         warnings.push(format!("{} footage file{} missing", missing.len(), if missing.len() == 1 { " is" } else { "s are" }));
     }
-    s.toast(if warnings.is_empty() { format!("Imported {folder_name}") } else { format!("Imported {folder_name}: {}", warnings.join("; ")) });
+    let said: Vec<&String> = notes.iter().chain(&warnings).collect();
+    s.toast(if said.is_empty() {
+        format!("Imported {folder_name}")
+    } else {
+        format!("Imported {folder_name}: {}", said.iter().map(|w| w.as_str()).collect::<Vec<_>>().join("; "))
+    });
     Ok(json!({
         "folder": folder.0,
         "items": items,
@@ -110,6 +124,7 @@ fn import_project(s: &mut Session, p: &Value) -> Result<Value> {
         "rootComps": roots.iter().map(|id| id.0).collect::<Vec<_>>(),
         "primaryComp": primary,
         "missingMedia": missing,
+        "foundInCollectFolder": moved,
         "warnings": warnings,
     }))
 }
@@ -120,7 +135,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "EffectCraft Project...",
         ["File", "Import"],
         None,
-        "{path (.ecproj or .ecprojx)} — merges the project into a folder named after the file; returns {folder, items, comps, rootComps, primaryComp (the only root comp, else null), missingMedia, warnings}",
+        "{path (.ecproj or .ecprojx)} — merges the project into a folder named after the file; returns {folder, items, comps, rootComps, primaryComp (the only root comp, else null), missingMedia, foundInCollectFolder, warnings}",
         always,
         import_project
     )]

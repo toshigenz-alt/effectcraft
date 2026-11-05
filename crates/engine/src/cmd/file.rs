@@ -52,6 +52,9 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     // written by hand) is found next to the project file, as After Effects looks for footage
     // relative to the project (#652).
     let refused = crate::doc_path::resolve_footage(&mut proj, Some(path));
+    // Local: a Collect Files folder that was moved still finds its footage in its (Footage) folder.
+    let services = s.services.clone();
+    let moved = crate::doc_path::find_moved_collect_footage(&mut proj, |_| true, Some(path), |q| services.exists(q));
     s.replace_project(proj, Some(path.to_string()));
     s.stored_paths.add(&s.project, Some(path));
     s.restore_view(&effectcraft_project::saved_view(&text));
@@ -62,6 +65,9 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         let shown = repaired.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
         let more = if more > 0 { format!(" and {more} more") } else { String::new() };
         s.toast(format!("This project had values outside EffectCraft's limits, corrected when it opened: {shown}{more}."));
+    }
+    if moved > 0 {
+        s.toast(format!("{moved} footage item{} found in the (Footage) folder beside the project.", if moved == 1 { "" } else { "s" }));
     }
     if let Some((_, first, why)) = refused.first() {
         let n = refused.len();
@@ -80,7 +86,7 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     if s.check_footage_on_open {
         crate::footage_check::start(s, None, false)?;
     }
-    Ok(json!({"path": path, "savedBy": saved_by, "repaired": repaired}))
+    Ok(json!({"path": path, "savedBy": saved_by, "repaired": repaired, "foundInCollectFolder": moved}))
 }
 
 /// The project file's text for `path`: `.ecproj` JSON, or XML for `.ecprojx` / `.xml` (a

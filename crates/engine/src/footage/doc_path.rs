@@ -162,6 +162,60 @@ pub(crate) fn resolve_footage_of(p: &mut Project, pick: impl Fn(ItemId) -> bool,
     refused
 }
 
+/// Local: the folder Collect Files puts footage in, beside the collected project.
+const COLLECTED: &str = "(Footage)";
+
+/// Local: where footage stored at `stored` is now, when the Collect Files folder it was collected
+/// into has been moved to `document_dir`: the part of `stored` from its last `(Footage)` folder on,
+/// beside the document, else the file name alone beside the document. Both `/` and `\` separate.
+fn moved_collect_path(stored: &str, document_dir: &Path) -> Option<PathBuf> {
+    let parts: Vec<&str> = stored.split(['/', '\\']).filter(|c| !c.is_empty()).collect();
+    let name = *parts.last()?;
+    let tail: &[&str] = match parts.iter().rposition(|c| *c == COLLECTED) {
+        Some(i) if i + 1 < parts.len() => &parts[i..],
+        _ => std::slice::from_ref(&parts[parts.len() - 1]),
+    };
+    if tail.iter().any(|c| *c == "." || *c == "..") || name.contains(':') {
+        return None;
+    }
+    Some(tail.iter().fold(document_dir.to_path_buf(), |dir, c| dir.join(c)))
+}
+
+/// Local: footage of `p` (the items `pick` selects) whose stored file is not there, but is in the
+/// `(Footage)` folder beside the document at `document` (or beside the document itself), takes
+/// that file: a Collect Files folder moved or copied elsewhere still finds its footage. Only a
+/// footage item every file of which is found that way moves; refused items (marked missing) and
+/// footage that exists stay as they are. Returns how many items moved.
+pub(crate) fn find_moved_collect_footage(p: &mut Project, pick: impl Fn(ItemId) -> bool, document: Option<&str>, exists: impl Fn(&str) -> bool) -> usize {
+    let Some(document) = document.filter(|d| !d.is_empty()) else { return 0 };
+    let document = std::path::absolute(Path::new(document)).unwrap_or_else(|_| PathBuf::from(document));
+    let Some(dir) = document.parent() else { return 0 };
+    let mut moved = 0;
+    for item in p.items.values_mut().filter(|i| pick(i.id)) {
+        let ItemKind::Footage(f) = &mut item.kind else { continue };
+        if f.missing || f.path.is_empty() {
+            continue;
+        }
+        let present = |q: &String| q.is_empty() || exists(q);
+        if if f.sequence.is_empty() { present(&f.path) } else { f.sequence.iter().all(present) } {
+            continue;
+        }
+        let found = |q: &String| -> Option<String> {
+            if q.is_empty() {
+                return Some(String::new());
+            }
+            let candidate = moved_collect_path(q, dir)?.to_string_lossy().into_owned();
+            exists(&candidate).then_some(candidate)
+        };
+        let Some(path) = found(&f.path) else { continue };
+        let Some(sequence) = f.sequence.iter().map(found).collect::<Option<Vec<_>>>() else { continue };
+        f.path = path;
+        f.sequence = sequence;
+        moved += 1;
+    }
+    moved
+}
+
 /// The message for footage whose stored path is not followed.
 pub(crate) fn refusal(stored: &str, why: NotFollowed) -> String {
     format!("the footage file {stored} is not opened: {why}")

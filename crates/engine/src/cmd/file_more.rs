@@ -469,7 +469,10 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
                     Err(e) => errors.push(format!("{src}: {e}")),
                 }
             }
-            new_paths.push(dst.clone());
+            // Local: the collected project names its footage relative to itself (`(Footage)/name`),
+            // so the folder still works after it is moved or copied; a relative path is taken from
+            // the project's folder when it opens (`doc_path`).
+            new_paths.push(dst.strip_prefix(&format!("{folder}/")).unwrap_or(dst).to_string());
         }
         let Some(ItemKind::Footage(f)) = proj.items.get_mut(&id).map(|it| &mut it.kind) else { continue };
         if f.sequence.is_empty() {

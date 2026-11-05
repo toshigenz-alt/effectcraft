@@ -755,3 +755,34 @@ fn illustrator_import_offers_and_applies_retain_layer_sizes() {
     assert_eq!((f.width, f.height), (30, 20));
     assert!(f.layer.as_ref().unwrap().layer_size);
 }
+
+/// Local: a project dropped on the Project panel imports into the open project, in a folder named
+/// after its file (File ▸ Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep;
+/// the open project stays open. Two dropped at once both import.
+#[test]
+fn projects_dropped_on_the_project_panel_import_into_the_open_one() {
+    let dir = std::env::temp_dir().join("ec-drop-project-import");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = vec![];
+    for name in ["Other A", "Other B"] {
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"name": format!("{name} comp"), "width": 64, "height": 64, "frameRate": 30, "duration": 1})).unwrap();
+        let path = dir.join(format!("{name}.ecproj"));
+        s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+        paths.push(path);
+    }
+    let (mut h, _) = harness();
+    let names = |h: &Harness<'_, EffectcraftApp>| h.state().session.project.items.values().map(|i| i.name.clone()).collect::<Vec<_>>();
+    h.event(Event::PointerMoved(rect(&h, "panel.Project").center()));
+    h.step();
+    for p in &paths {
+        h.input_mut().dropped_files.push(Arc::new(Dropped(p.clone())));
+    }
+    h.run_steps(3);
+    let now = names(&h);
+    // "Main" and "Clip" still there: imported into the open project, not opened in its place.
+    for want in ["Main", "Clip", "Other A.ecproj", "Other A comp", "Other B.ecproj", "Other B comp"] {
+        assert!(now.iter().any(|n| n == want), "{want} in {now:?}");
+    }
+}

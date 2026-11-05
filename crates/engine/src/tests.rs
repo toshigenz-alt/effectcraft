@@ -19,6 +19,7 @@ mod frame_export;
 mod fuzz_open;
 mod history;
 mod import_project;
+// Local: a moved Collect Files folder still finds its footage; Collect stores relative paths.
 mod instance3d;
 mod key_metadata_order;
 mod key_time;
@@ -34,6 +35,7 @@ mod menu_cmds;
 mod model3d;
 mod models;
 mod motion_blur_depth;
+mod moved_collect;
 mod paint;
 mod panels;
 mod project_items;

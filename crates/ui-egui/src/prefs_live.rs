@@ -72,14 +72,32 @@ pub fn dropped_files(app: &mut EffectcraftApp, ui: &egui::Ui, bounds: Rect) {
         l.ends_with(".ecproj") || l.ends_with(".ecprojx")
     });
 
-    if proj.len() > 1 {
-        errors.push(crate::i18n::tr_args("Only one project can be opened per drop; skipped {} more", &[&proj.len().saturating_sub(1)]));
-    }
+    // Local: projects dropped on the Project panel import into the open project, each in a folder
+    // of its own (File ▸ Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep.
+    // Dropped anywhere else, one opens in place of the open project, as before.
+    let over_project = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| {
+        app.auto
+            .elements
+            .iter()
+            .find(|e| e.id == "panel.Project")
+            .is_some_and(|e| Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])).contains(p))
+    });
+    if over_project {
+        for p in &proj {
+            if let Err(e) = crate::menus::invoke(app, &ctx, "file.importProject", json!({"path": p})) {
+                errors.push(crate::i18n::tr_args("Cannot import dropped project {}: {}", &[&p, &e]));
+            }
+        }
+    } else {
+        if proj.len() > 1 {
+            errors.push(crate::i18n::tr_args("Only one project can be opened per drop; skipped {} more", &[&proj.len().saturating_sub(1)]));
+        }
 
-    if let Some(p) = proj.first()
-        && let Err(e) = crate::menus::invoke(app, &ctx, "file.open", json!({"path": p}))
-    {
-        errors.push(crate::i18n::tr_args("Cannot open dropped project {}: {}", &[&p, &e]));
+        if let Some(p) = proj.first()
+            && let Err(e) = crate::menus::invoke(app, &ctx, "file.open", json!({"path": p}))
+        {
+            errors.push(crate::i18n::tr_args("Cannot open dropped project {}: {}", &[&p, &e]));
+        }
     }
 
     if !rest.is_empty() {
