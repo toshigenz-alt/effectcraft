@@ -69,24 +69,14 @@ fn register_points(app: &mut EffectcraftApp, prefix: &str, gr: Rect, pts: &[[f32
 }
 
 /// Small coloured tabs (`names[i]`, swatch `cols[i]`); returns the clicked one.
-fn tabs(
-    app: &mut EffectcraftApp,
-    ui: &mut egui::Ui,
-    p: &egui::Painter,
-    x0: f32,
-    cy: f32,
-    cur: usize,
-    names: &[&str],
-    cols: &[Color32],
-    id: &str,
-) -> Option<usize> {
+fn tabs(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, at: Pos2, cur: usize, (names, cols): (&[&str], &[Color32]), id: &str) -> Option<usize> {
     let t = app.tokens;
-    let mut x = x0;
+    let (mut x, cy) = (at.x, at.y);
     let mut out = None;
     for (i, name) in names.iter().enumerate() {
         let w = if cols.is_empty() { 16.0 + name.chars().count() as f32 * 6.2 } else { 20.0 };
         let r = Rect::from_min_size(pos2(x, cy - 9.0), vec2(w, 18.0));
-        let resp = ui.interact(r, egui::Id::new((id, i)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique((id, i)), Sense::click());
         let sel = i == cur;
         if sel {
             p.rect_filled(r, 3.0, t.row_selected);
@@ -114,9 +104,11 @@ fn tabs(
     out
 }
 
+/// A small "Reset" link centred in `r`, registered under the automation id `id`; returns whether
+/// it was clicked.
 fn reset_link(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, r: Rect, id: &str) -> bool {
     let t = app.tokens;
-    let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     p.text(r.center(), Align2::CENTER_CENTER, tr("Reset"), Tokens::ui(11.5), if resp.hovered() { t.hot_text } else { t.text_dim });
     app.auto.add(id, r, "Reset");
     resp.clicked()
@@ -165,6 +157,10 @@ pub fn inline_editor(
 
 const RGB_CURVES: [(&str, &str); 4] = [("master", "Master"), ("red", "Red"), ("green", "Green"), ("blue", "Blue")];
 
+/// The Lumetri RGB Curves editor for effect group `g`: channel tabs (Master, Red, Green, Blue),
+/// the selected channel's curve graph with its Reset, and the point positions registered for
+/// automation. A curve edit or Reset is queued on `actions` as a `prop.set` of that channel's
+/// curve string; the visible channel is remembered in `app.ui.fx_curve_channel` per group.
 #[allow(clippy::too_many_arguments)]
 fn rgb_curves(
     app: &mut EffectcraftApp,
@@ -185,7 +181,7 @@ fn rgb_curves(
     let cy = r.min.y + 15.0;
     let cols = [Color32::from_gray(0xe8), Color32::from_rgb(0xf0, 0x50, 0x50), Color32::from_rgb(0x50, 0xd0, 0x60), Color32::from_rgb(0x50, 0x80, 0xff)];
     let names: Vec<&str> = RGB_CURVES.iter().map(|c| c.1).collect();
-    if let Some(n) = tabs(app, ui, p, x0, cy, ch, &names, &cols, &format!("{prefix}.channel")) {
+    if let Some(n) = tabs(app, ui, p, pos2(x0, cy), ch, (&names, &cols), &format!("{prefix}.channel")) {
         app.ui.fx_curve_channel.insert(g.uid, n);
     }
     let id = RGB_CURVES[ch].0;
@@ -195,8 +191,8 @@ fn rgb_curves(
         set_str(actions, layer, g, id, fw::CurvePoints::identity().format(), None);
     }
     let gr = Rect::from_min_size(pos2(x0, r.min.y + 30.0), vec2(size, size));
-    let gid = egui::Id::new(("lumetri-rgb", euid, ch));
-    let (resp, edit) = fw::curves_graph(ui, gr, &cur, ch, false, false, gid, &t);
+    let gid = egui::Id::unique(("lumetri-rgb", euid, ch));
+    let (resp, edit) = fw::curves_graph(ui, gr, &cur, ch, fw::CurveMode { pencil: false, natural: false }, gid, &t);
     app.auto.add(&format!("{prefix}.graph"), gr, "RGB Curves");
     register_points(app, &prefix, gr, &cur.0);
     let key = gesture_key(ui, gid, resp.drag_started() || resp.clicked());
@@ -272,6 +268,11 @@ fn hue_color(h: f32) -> Color32 {
     Color32::from(c)
 }
 
+/// The Lumetri Hue/Saturation Curves editor for effect group `g`: tabs for the Hue vs Sat,
+/// Hue vs Hue, Hue vs Luma, Luma vs Sat and Sat vs Sat curves, drawn as a neutral-relative offset
+/// curve over the axis' colour band, with point drag/add/remove gestures and a Reset. Changes are
+/// queued on `actions` as a `prop.set` of the selected curve's point list; the visible tab is kept
+/// in `app.ui.fx_curve_channel` per group.
 #[allow(clippy::too_many_arguments)]
 fn huesat_curves(
     app: &mut EffectcraftApp,
@@ -291,7 +292,7 @@ fn huesat_curves(
     let x0 = r.min.x + 38.0;
     let cy = r.min.y + 15.0;
     let names: Vec<&str> = HUESAT.iter().map(|c| c.1).collect();
-    if let Some(n) = tabs(app, ui, p, x0, cy, k, &names, &[], &format!("{prefix}.curve")) {
+    if let Some(n) = tabs(app, ui, p, pos2(x0, cy), k, (&names, &[]), &format!("{prefix}.curve")) {
         app.ui.fx_curve_channel.insert(g.uid, n);
     }
     let (id, name, axis, periodic) = HUESAT[k];
@@ -324,7 +325,7 @@ fn huesat_curves(
         })
         .collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, Color32::from_gray(0xe8))));
-    let gid = egui::Id::new(("lumetri-hs", euid, k));
+    let gid = egui::Id::unique(("lumetri-hs", euid, k));
     let resp = ui.interact(gr.expand(6.0), gid, Sense::click_and_drag());
     app.auto.add(&format!("{prefix}.graph"), gr, name);
     let drag_id = gid.with("drag");
@@ -444,6 +445,12 @@ fn wheel_point(c: Pos2, radius: f32, phase: f32) -> Pos2 {
     pos2(c.x + radius * a.sin(), c.y - radius * a.cos())
 }
 
+/// Colorama's Output Cycle wheel for effect group `g`: the palette drawn as a ring with its stops.
+/// Clicking the ring adds a stop with the colour there, dragging moves one, and Alt-clicking or
+/// dragging one off removes it while another stop remains; the selected stop's colour can be
+/// edited below. A change queues
+/// the rewritten palette on `actions`, and for a preset palette also switches the effect to the
+/// custom palette in the same undo step.
 #[allow(clippy::too_many_arguments)]
 fn colorama_wheel(
     app: &mut EffectcraftApp,
@@ -479,7 +486,7 @@ fn colorama_wheel(
     }
     p.circle_stroke(c, outer, Stroke::new(1.0, Color32::from_black_alpha(160)));
     p.circle_stroke(c, inner, Stroke::new(1.0, Color32::from_black_alpha(160)));
-    let wid = egui::Id::new(("colorama-wheel", euid));
+    let wid = egui::Id::unique(("colorama-wheel", euid));
     let ring = Rect::from_center_size(c, vec2(outer * 2.0 + 40.0, outer * 2.0 + 40.0));
     let resp = ui.interact(ring, wid, Sense::click_and_drag());
     app.auto.add(&format!("{prefix}.wheel"), ring, "Output Cycle");
@@ -596,7 +603,7 @@ fn colorama_wheel(
     p.text(
         pos2(sr.min.x, sr.max.y + 9.0),
         Align2::LEFT_CENTER,
-        "Click the ring to add a colour; Alt-click a stop (or drag it off) to remove it",
+        crate::i18n::tr("Click the ring to add a colour; Alt-click a stop (or drag it off) to remove it"),
         Tokens::ui(10.5),
         t.text_faint,
     );
@@ -662,6 +669,10 @@ pub fn join_map(m: &[fw::CurvePoints; 3]) -> String {
     m.iter().map(|c| c.format()).collect::<Vec<_>>().join(" | ")
 }
 
+/// Glow's Colour Map for effect group `g`: a strip showing the gradient the glow uses (A/B colours,
+/// or the arbitrary map sampled through the loop settings). In arbitrary-map mode it also draws the
+/// RGB curve tabs and the selected channel's graph with a Reset; edits queue a `prop.set` of
+/// `arbitraryMap` on `actions`.
 #[allow(clippy::too_many_arguments)]
 fn glow_map(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, layer: &Layer, g: &PropGroup, ectx: &EvalCtx, r: Rect, actions: &mut Actions) {
     let t = app.tokens;
@@ -708,7 +719,7 @@ fn glow_map(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, laye
     }
     let ch = app.ui.fx_curve_channel.get(&euid).copied().unwrap_or(0).min(2);
     let cols = [Color32::from_rgb(0xf0, 0x50, 0x50), Color32::from_rgb(0x50, 0xd0, 0x60), Color32::from_rgb(0x50, 0x80, 0xff)];
-    if let Some(n) = tabs(app, ui, p, x0, r.min.y + 15.0, ch, &["Red", "Green", "Blue"], &cols, &format!("{prefix}.channel")) {
+    if let Some(n) = tabs(app, ui, p, pos2(x0, r.min.y + 15.0), ch, (&["Red", "Green", "Blue"], &cols), &format!("{prefix}.channel")) {
         app.ui.fx_curve_channel.insert(euid, n);
     }
     if reset_link(app, ui, p, Rect::from_min_size(pos2(x0 + size - 44.0, r.min.y + 6.0), vec2(44.0, 18.0)), &format!("{prefix}.reset")) {
@@ -717,8 +728,8 @@ fn glow_map(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, laye
         set_str(actions, layer, g, "arbitraryMap", join_map(&m), None);
     }
     let gr = Rect::from_min_size(pos2(x0, r.min.y + 30.0), vec2(size, size));
-    let gid = egui::Id::new(("glow-map", euid, ch));
-    let (resp, edit) = fw::curves_graph(ui, gr, &map[ch], ch + 1, false, false, gid, &t);
+    let gid = egui::Id::unique(("glow-map", euid, ch));
+    let (resp, edit) = fw::curves_graph(ui, gr, &map[ch], ch + 1, fw::CurveMode { pencil: false, natural: false }, gid, &t);
     app.auto.add(&format!("{prefix}.graph"), gr, "Arbitrary Map");
     register_points(app, &prefix, gr, &map[ch].0);
     let key = gesture_key(ui, gid, resp.drag_started() || resp.clicked());
@@ -774,6 +785,10 @@ pub fn add_pair(v: &[(f64, f64)]) -> (f64, f64) {
     ((a.0 + ds * 0.5).rem_euclid(1.0), (a.1 + gap * 0.5).rem_euclid(1.0))
 }
 
+/// Reshape's correspondence buttons: Add Point appends a pair at the widest destination-fraction
+/// gap (or `(0, 0)` for an empty list), Remove Point drops the last stored pair, and Clear removes
+/// all pairs. A status line says whether points are automatic. Each change
+/// queues a `prop.set` of the `correspondencePoints` string on `actions`.
 #[allow(clippy::too_many_arguments)]
 fn reshape_buttons(
     app: &mut EffectcraftApp,
@@ -791,19 +806,19 @@ fn reshape_buttons(
     let b1 = Rect::from_min_size(pos2(r.min.x + 24.0, r.min.y + 4.0), vec2(84.0, 22.0));
     let b2 = Rect::from_min_size(pos2(b1.max.x + 8.0, b1.min.y), vec2(96.0, 22.0));
     let b3 = Rect::from_min_size(pos2(b2.max.x + 8.0, b1.min.y), vec2(56.0, 22.0));
-    if widgets::text_button(ui, b1, "Add Point", false, &t, egui::Id::new(("reshape-add", euid))).clicked() {
+    if widgets::text_button(ui, b1, crate::i18n::tr("Add Point"), false, &t, egui::Id::unique(("reshape-add", euid))).clicked() {
         let mut v = pairs.clone();
         v.push(add_pair(&pairs));
         set_str(actions, layer, g, "correspondencePoints", format_pairs(&v), None);
     }
     app.auto.add(&format!("effectControls.effect.{euid}.reshape.add"), b1, "Add Point");
-    if widgets::text_button(ui, b2, "Remove Point", false, &t, egui::Id::new(("reshape-remove", euid))).clicked() && !pairs.is_empty() {
+    if widgets::text_button(ui, b2, crate::i18n::tr("Remove Point"), false, &t, egui::Id::unique(("reshape-remove", euid))).clicked() && !pairs.is_empty() {
         let mut v = pairs.clone();
         v.pop();
         set_str(actions, layer, g, "correspondencePoints", format_pairs(&v), None);
     }
     app.auto.add(&format!("effectControls.effect.{euid}.reshape.remove"), b2, "Remove Point");
-    if widgets::text_button(ui, b3, "Clear", false, &t, egui::Id::new(("reshape-clear", euid))).clicked() && !pairs.is_empty() {
+    if widgets::text_button(ui, b3, crate::i18n::tr("Clear"), false, &t, egui::Id::unique(("reshape-clear", euid))).clicked() && !pairs.is_empty() {
         set_str(actions, layer, g, "correspondencePoints", String::new(), None);
     }
     app.auto.add(&format!("effectControls.effect.{euid}.reshape.clear"), b3, "Clear");
@@ -862,8 +877,8 @@ fn extractor_layers(
     p.text(pos2(r.min.x + 37.0, r.center().y), Align2::LEFT_CENTER, tr("Layer"), Tokens::ui(12.0), t.text);
     let vx = (r.min.x + r.width() * 0.48).max(r.min.x + 161.0);
     let dr = Rect::from_min_size(pos2(vx, r.center().y - 9.0), vec2((r.max.x - vx - 56.0).clamp(80.0, 200.0), 18.0));
-    let pop = egui::Id::new(("extractor-layers", euid));
-    if widgets::dropdown(ui, dr, &label, &t, egui::Id::new(("extractor-layer", euid)))
+    let pop = egui::Id::unique(("extractor-layers", euid));
+    if widgets::dropdown(ui, dr, &label, &t, egui::Id::unique(("extractor-layer", euid)))
         .on_hover_text(tr("The OpenEXR layer shown in red, green, blue and alpha"))
         .clicked()
     {
@@ -904,8 +919,8 @@ pub fn channel_popup(
     let t = app.tokens;
     let uid = prop.uid;
     let label = if cur.trim().is_empty() { NO_CHANNEL } else { cur };
-    let pop = egui::Id::new(("ec-chpop", uid));
-    if widgets::dropdown(ui, r, label, &t, egui::Id::new(("ec-ch", uid))).clicked() {
+    let pop = egui::Id::unique(("ec-chpop", uid));
+    if widgets::dropdown(ui, r, label, &t, egui::Id::unique(("ec-ch", uid))).clicked() {
         widgets::open_popup(ui, pop);
     }
     app.auto.add(&format!("effectControls.prop.{uid}.value"), r, &prop.name);
@@ -997,7 +1012,7 @@ pub fn reshape_overlay(
         painter.line_segment([ps, pd], Stroke::new(1.0, Color32::from_white_alpha(150)));
         for (end, s, col) in [(0usize, ps, ys), (1, pd, cs)] {
             let hr = Rect::from_center_size(s, vec2(12.0, 12.0));
-            let id = egui::Id::new(("reshape-pt", g.uid, i, end));
+            let id = egui::Id::unique(("reshape-pt", g.uid, i, end));
             let resp = ui.interact(hr, id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             painter.rect_filled(Rect::from_center_size(s, vec2(7.0, 7.0)), 0.0, if hot { Color32::WHITE } else { col });
@@ -1091,7 +1106,7 @@ pub fn mesh_warp_overlay(
     let accent = app.tokens.accent;
     for (k, s) in screen.iter().enumerate() {
         let hr = Rect::from_center_size(*s, vec2(10.0, 10.0));
-        let id = egui::Id::new(("mesh-warp-vertex", g.uid, k));
+        let id = egui::Id::unique(("mesh-warp-vertex", g.uid, k));
         let resp = ui.interact(hr, id, Sense::drag());
         let hot = resp.hovered() || resp.dragged();
         let dot = Rect::from_center_size(*s, vec2(5.0, 5.0));
@@ -1188,7 +1203,7 @@ fn liquify_buttons(
     let b_rb = Rect::from_min_size(pos2(b1.max.x + 4.0, b1.min.y), vec2(78.0, 22.0));
     let b2 = Rect::from_min_size(pos2(b_rb.max.x + 4.0, b1.min.y), vec2(48.0, 22.0));
     let b3 = Rect::from_min_size(pos2(b2.max.x + 4.0, b1.min.y), vec2(46.0, 22.0));
-    if widgets::text_button(ui, b1, "Brush", active && tool != 9, &t, egui::Id::new(("liquify-brush", euid))).clicked() {
+    if widgets::text_button(ui, b1, crate::i18n::tr("Brush"), active && tool != 9, &t, egui::Id::unique(("liquify-brush", euid))).clicked() {
         if active && tool != 9 {
             app.ui.fx_liquify_brush.remove(&euid);
         } else {
@@ -1197,7 +1212,7 @@ fn liquify_buttons(
         }
     }
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.brush"), b1, "Brush");
-    let rb_resp = widgets::text_button(ui, b_rb, "Relax Brush", active && tool == 9, &t, egui::Id::new(("liquify-relax-brush", euid)));
+    let rb_resp = widgets::text_button(ui, b_rb, crate::i18n::tr("Relax Brush"), active && tool == 9, &t, egui::Id::unique(("liquify-relax-brush", euid)));
     if rb_resp.clicked() {
         if active && tool == 9 {
             app.ui.fx_liquify_brush.remove(&euid);
@@ -1214,8 +1229,8 @@ fn liquify_buttons(
     let rb_hint = "Brush to gradually relax only the area where you click or drag";
     rb_resp.on_hover_text(rb_hint);
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.relaxBrush"), b_rb, "Relax Brush");
-    let relax_id = egui::Id::new(("liquify-relax", euid));
-    let rresp = widgets::text_button(ui, b2, "Relax", false, &t, relax_id);
+    let relax_id = egui::Id::unique(("liquify-relax", euid));
+    let rresp = widgets::text_button(ui, b2, crate::i18n::tr("Relax"), false, &t, relax_id);
     let holding_relax = rresp.is_pointer_button_down_on() || rresp.clicked();
     if holding_relax && !strokes.is_empty() {
         ui.ctx().request_repaint();
@@ -1233,7 +1248,7 @@ fn liquify_buttons(
     let relax_hint = "Hold to gradually relax the entire distortion mesh at Speed";
     rresp.on_hover_text(relax_hint);
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.relax"), b2, "Relax");
-    if widgets::text_button(ui, b3, "Clear", false, &t, egui::Id::new(("liquify-clear", euid))).clicked() && !strokes.is_empty() {
+    if widgets::text_button(ui, b3, crate::i18n::tr("Clear"), false, &t, egui::Id::unique(("liquify-clear", euid))).clicked() && !strokes.is_empty() {
         if dm_animated {
             set_str(actions, layer, g, "distortionMesh", "clear".to_string(), None);
         } else {
@@ -1246,7 +1261,14 @@ fn liquify_buttons(
     let speed_lbl = "Speed";
     p.text(pos2(r.min.x + 20.0, cy2), Align2::LEFT_CENTER, speed_lbl, Tokens::ui(11.0), t.text_dim);
     let (sr, nv, _) =
-        widgets::hot_number_at(ui, pos2(r.min.x + 56.0, y2), egui::Id::new(("liquify-speed", euid)), app.ui.fx_liquify_speed, 0.05, (0.1, 20.0), 1, "x", &t);
+        widgets::hot_number_at(
+            ui,
+            pos2(r.min.x + 56.0, y2),
+            egui::Id::unique(("liquify-speed", euid)),
+            app.ui.fx_liquify_speed,
+            &widgets::HotSpec { speed: 0.05, range: (0.1, 20.0), decimals: 1, suffix: "x" },
+            &t,
+        );
     if let Some(nv) = nv {
         app.ui.fx_liquify_speed = nv.clamp(0.1, 20.0);
     }
@@ -1261,9 +1283,9 @@ fn liquify_buttons(
     let ax = sr.max.x + 12.0;
     p.text(pos2(ax, cy2), Align2::LEFT_CENTER, anim_lbl, Tokens::ui(11.0), t.text_dim);
     let dr = Rect::from_min_size(pos2(ax + 32.0, y2), vec2(74.0, 18.0));
-    let pop_id = egui::Id::new(("liquify-interp-pop", euid));
+    let pop_id = egui::Id::unique(("liquify-interp-pop", euid));
     let cur_interp = if is_smooth { "Smooth" } else { "Linear" };
-    if widgets::dropdown(ui, dr, cur_interp, &t, egui::Id::new(("liquify-interp", euid))).clicked() {
+    if widgets::dropdown(ui, dr, cur_interp, &t, egui::Id::unique(("liquify-interp", euid))).clicked() {
         widgets::open_popup(ui, pop_id);
     }
     app.auto.add(&format!("effectControls.effect.{euid}.liquify.interp"), dr, "Keyframe Interpolation");
@@ -1285,7 +1307,7 @@ fn liquify_buttons(
         let (row, col) = (i / 4, i % 4);
         let br = Rect::from_min_size(pos2(r.min.x + 20.0 + col as f32 * (bw + 4.0), r.min.y + 50.0 + row as f32 * 21.0), vec2(bw, 18.0));
         let full = if i == 9 { "Relax (Reconstruction)" } else { LIQUIFY_TOOL_LABELS[i] };
-        let resp = widgets::text_button(ui, br, short, active && tool == i, &t, egui::Id::new(("liquify-tool", euid, i)));
+        let resp = widgets::text_button(ui, br, short, active && tool == i, &t, egui::Id::unique(("liquify-tool", euid, i)));
         if resp.clicked() {
             app.ui.fx_liquify_brush.insert(euid);
             app.ui.fx_pick = None;
@@ -1335,7 +1357,7 @@ pub fn liquify_overlay(
     painter.rect_filled(chip, 11.0, Color32::from_black_alpha(180));
     let hint = format!("Liquify ({tool_label}) — Esc to exit");
     painter.text(chip.center(), Align2::CENTER_CENTER, hint, Tokens::ui(11.5), t.text);
-    let clone_id = egui::Id::new(("liquify-clone-src", euid));
+    let clone_id = egui::Id::unique(("liquify-clone-src", euid));
     if tool_id == "clone"
         && let Some(src) = ctx.data(|d| d.get_temp::<[f64; 2]>(clone_id))
     {
@@ -1346,7 +1368,7 @@ pub fn liquify_overlay(
     if super::space_hand(&ctx) || ui.input(|i| i.pointer.middle_down()) || matches!(app.ui.tool, crate::state::Tool::Hand | crate::state::Tool::Zoom) {
         return;
     }
-    let id = egui::Id::new(("viewer-liquify-brush", euid));
+    let id = egui::Id::unique(("viewer-liquify-brush", euid));
     let resp = ui.interact(map.area, id, Sense::click_and_drag());
     app.auto.add(&format!("viewer.liquify.canvas.{euid}"), map.area, "Liquify brush canvas");
     let p0 = map.to_screen(fw::layer_to_comp(fm, [0.0, 0.0]));
@@ -1355,8 +1377,8 @@ pub fn liquify_overlay(
     let scale = ((px - p0).length() + (py - p0).length()) * 0.5;
     let rad = (brush_size as f32 * 0.5 * scale).max(2.0);
     let mods = ui.input(|i| i.modifiers);
-    let sid = egui::Id::new(("liquify-size-drag", euid));
-    let did = egui::Id::new(("liquify-drag", euid));
+    let sid = egui::Id::unique(("liquify-size-drag", euid));
+    let did = egui::Id::unique(("liquify-drag", euid));
     let ctrl_down = ui.input(|i| {
         i.modifiers.ctrl
             || i.modifiers.command
