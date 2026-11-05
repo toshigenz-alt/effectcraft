@@ -465,6 +465,15 @@ fn create_on_double_click(app: &EffectcraftApp, tool: Tool) -> Option<(&'static 
             // itself), or a shape layer while Tool Creates Mask is on — as dragging does.
             let sel = app.session.state.selected_layers.first().copied().and_then(|id| comp.layer(id));
             if let Some(l) = sel.filter(|l| l.source.is_av() && (app.session.state.shape_tool.creates_mask || !matches!(l.source, LayerSource::Shape))) {
+                // Local: a layer with a size of its own (footage, a solid, a precomp) gets a mask
+                // of that size, its box `[0, 0, width, height]` in layer space, wherever the layer
+                // is and however it is transformed. Text and shape layers keep the comp box below.
+                if matches!(l.source, LayerSource::Footage { .. } | LayerSource::Solid { .. } | LayerSource::Comp { .. }) {
+                    let (lw, lh) = effectcraft_engine::render::source_size(&app.session.project, l);
+                    if lw > 0 && lh > 0 {
+                        return Some(("layer.addMask", json!({"layer": l.id.0, "shape": kind, "rect": [0.0, 0.0, lw as f64, lh as f64]})));
+                    }
+                }
                 // The box in layer space, so a moved, scaled or rotated layer still gets a
                 // comp-filling mask: all four corners are mapped, and their bounds are the
                 // smallest axis-aligned box around the comp box.
@@ -1281,6 +1290,55 @@ mod tests {
             assert!(g.sub("stroke").is_none(), "no outline when the tool's Stroke is off");
             assert_eq!(g.sub("fill").expect("the fill").get("color").expect("color").value.as_color(), [1.0, 0.0, 0.0, 1.0]);
         }
+        assert!(app.ui.status.is_empty(), "{}", app.ui.status);
+    }
+
+    /// Local: a double-clicked shape tool masks a layer that has a size of its own at that size,
+    /// `[0, 0, width, height]` in layer space, even when the layer is moved and scaled. The solid
+    /// is smaller than the comp, not square, off-centre and scaled, so a mask made from the comp
+    /// box (upstream's) fails this test.
+    #[test]
+    fn double_click_masks_a_solid_at_its_own_size() {
+        let mut s = effectcraft_engine::Session::default();
+        s.execute("comp.new", json!({"width": 640, "height": 360, "duration": 2})).unwrap();
+        let l = s.execute("layer.newSolid", json!({"color": "#ff0000", "width": 300, "height": 200})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("prop.set", json!({"layer": l, "path": "transform/position", "value": [100, 60, 0]})).unwrap();
+        s.execute("prop.set", json!({"layer": l, "path": "transform/scale", "value": [50, 50, 100]})).unwrap();
+        s.execute("layer.select", json!({"layers": [l]})).unwrap();
+        let mut app = EffectcraftApp::new(s);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens, crate::i18n::language(&app));
+        frame(&mut app, &ctx, 0.0, vec![]);
+        frame(&mut app, &ctx, 0.1, vec![]);
+        let pointer = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let double_click = |app: &mut EffectcraftApp, ctx: &egui::Context, t: f64, id: &str| {
+            let e = app.auto.elements.iter().find(|w| w.id == id).unwrap_or_else(|| panic!("no {id}"));
+            let at = egui::pos2(e.rect[0] + e.rect[2] / 2.0, e.rect[1] + e.rect[3] / 2.0);
+            frame(app, ctx, t, vec![egui::Event::PointerMoved(at), pointer(at, true), pointer(at, false), pointer(at, true), pointer(at, false)]);
+        };
+        let mask_box = |app: &EffectcraftApp, n: usize| {
+            let comp = app.session.active_comp().unwrap();
+            let layer = comp.layer(LayerId(l)).unwrap();
+            let p = layer.props.prop(&format!("masks/Mask {n}/path")).unwrap_or_else(|| panic!("Mask {n}"));
+            let b = effectcraft_path::bounds(&[effectcraft_path::to_kurbo(p.value.as_path().expect("a mask path"))]).expect("bounds");
+            [b.x0, b.y0, b.x1, b.y1]
+        };
+        let close = |got: [f64; 4], want: [f64; 4]| got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.5);
+        double_click(&mut app, &ctx, 1.0, "tools.Rectangle");
+        assert_eq!(app.session.active_comp().unwrap().layers.len(), 1, "a mask, not a layer");
+        let b = mask_box(&app, 1);
+        assert!(close(b, [0.0, 0.0, 300.0, 200.0]), "the mask is the solid's own box: {b:?} ({})", app.ui.status);
+        // The Ellipse is inscribed in the same box.
+        app.ui.slot_tools[8] = Tool::Ellipse;
+        frame(&mut app, &ctx, 1.05, vec![]);
+        double_click(&mut app, &ctx, 2.0, "tools.Ellipse");
+        let b = mask_box(&app, 2);
+        assert!(close(b, [0.0, 0.0, 300.0, 200.0]), "the ellipse fits the solid's box: {b:?}");
+        // One undo step per mask.
+        app.session.execute("edit.undo", json!({})).unwrap();
+        let comp = app.session.active_comp().unwrap();
+        assert!(comp.layer(LayerId(l)).unwrap().props.prop("masks/Mask 2/path").is_none(), "undo removes the ellipse");
+        assert!(comp.layer(LayerId(l)).unwrap().props.prop("masks/Mask 1/path").is_some(), "and keeps the rectangle");
         assert!(app.ui.status.is_empty(), "{}", app.ui.status);
     }
 }
