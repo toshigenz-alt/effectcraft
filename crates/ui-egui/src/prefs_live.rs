@@ -72,31 +72,23 @@ pub fn dropped_files(app: &mut EffectcraftApp, ui: &egui::Ui, bounds: Rect) {
         l.ends_with(".ecproj") || l.ends_with(".ecprojx")
     });
 
-    // Local: projects dropped on the Project panel import into the open project, each in a folder
-    // of its own (File ▸ Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep.
-    // Dropped anywhere else, one opens in place of the open project, as before.
-    let over_project = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| {
-        app.auto
-            .elements
-            .iter()
-            .find(|e| e.id == "panel.Project")
-            .is_some_and(|e| Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])).contains(p))
-    });
-    if over_project {
-        for p in &proj {
-            if let Err(e) = crate::menus::invoke(app, &ctx, "file.importProject", json!({"path": p})) {
-                errors.push(crate::i18n::tr_args("Cannot import dropped project {}: {}", &[&p, &e]));
-            }
-        }
-    } else {
-        if proj.len() > 1 {
-            errors.push(crate::i18n::tr_args("Only one project can be opened per drop; skipped {} more", &[&proj.len().saturating_sub(1)]));
-        }
-
-        if let Some(p) = proj.first()
-            && let Err(e) = crate::menus::invoke(app, &ctx, "file.open", json!({"path": p}))
-        {
-            errors.push(crate::i18n::tr_args("Cannot open dropped project {}: {}", &[&p, &e]));
+    // Local: dropped projects import into the open project, each in a folder of its own (File ▸
+    // Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep, wherever they are
+    // dropped: winit's file drop carries no position (its Windows drop target ignores the point)
+    // and no pointer moves arrive during the OS drag, so the pointer egui has is stale. Into an
+    // empty project the first one opens instead (the rest import into it). File ▸ Open opens one
+    // in place of the open project.
+    let any_project = !proj.is_empty();
+    let mut proj = proj.into_iter();
+    if app.session.project.items.is_empty()
+        && let Some(p) = proj.next()
+        && let Err(e) = crate::menus::invoke(app, &ctx, "file.open", json!({"path": p}))
+    {
+        errors.push(crate::i18n::tr_args("Cannot open dropped project {}: {}", &[&p, &e]));
+    }
+    for p in proj {
+        if let Err(e) = crate::menus::invoke(app, &ctx, "file.importProject", json!({"path": p})) {
+            errors.push(crate::i18n::tr_args("Cannot import dropped project {}: {}", &[&p, &e]));
         }
     }
 
@@ -119,7 +111,7 @@ pub fn dropped_files(app: &mut EffectcraftApp, ui: &egui::Ui, bounds: Rect) {
                     .is_some_and(|e| Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])).contains(p))
             });
 
-        let at = if proj.is_empty() && !over_timeline {
+        let at = if !any_project && !over_timeline {
             ctx.input(|i| i.pointer.hover_pos()).filter(|p| viewer.is_some_and(|v| v.contains(*p))).and_then(|p| crate::panels::viewer::screen_to_comp(&ctx, p))
         } else {
             None

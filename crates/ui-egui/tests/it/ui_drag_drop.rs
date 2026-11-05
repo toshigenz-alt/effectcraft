@@ -756,11 +756,12 @@ fn illustrator_import_offers_and_applies_retain_layer_sizes() {
     assert!(f.layer.as_ref().unwrap().layer_size);
 }
 
-/// Local: a project dropped on the Project panel imports into the open project, in a folder named
-/// after its file (File ▸ Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep;
-/// the open project stays open. Two dropped at once both import.
+/// Local: dropped projects import into the open project, in a folder named after each file (File
+/// ▸ Import ▸ EffectCraft Project…), as After Effects imports a dropped .aep, wherever the pointer
+/// is: the OS drop carries no position, so egui's pointer can be anywhere (here: never moved into
+/// the window, as during a drag from Explorer). Into an empty project the first one opens instead.
 #[test]
-fn projects_dropped_on_the_project_panel_import_into_the_open_one() {
+fn dropped_projects_import_into_the_open_one_wherever_they_land() {
     let dir = std::env::temp_dir().join("ec-drop-project-import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -772,9 +773,11 @@ fn projects_dropped_on_the_project_panel_import_into_the_open_one() {
         s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
         paths.push(path);
     }
-    let (mut h, _) = harness();
     let names = |h: &Harness<'_, EffectcraftApp>| h.state().session.project.items.values().map(|i| i.name.clone()).collect::<Vec<_>>();
-    h.event(Event::PointerMoved(rect(&h, "panel.Project").center()));
+
+    // A project with items: both import, wherever the pointer is (over the viewer here).
+    let (mut h, _) = harness();
+    h.event(Event::PointerMoved(rect(&h, "viewer.area").center()));
     h.step();
     for p in &paths {
         h.input_mut().dropped_files.push(Arc::new(Dropped(p.clone())));
@@ -785,4 +788,15 @@ fn projects_dropped_on_the_project_panel_import_into_the_open_one() {
     for want in ["Main", "Clip", "Other A.ecproj", "Other A comp", "Other B.ecproj", "Other B comp"] {
         assert!(now.iter().any(|n| n == want), "{want} in {now:?}");
     }
+
+    // An empty project: the first opens, the second imports into it.
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(|_| EffectcraftApp::new(Session::default()));
+    h.run_steps(3);
+    for p in &paths {
+        h.input_mut().dropped_files.push(Arc::new(Dropped(p.clone())));
+    }
+    h.run_steps(3);
+    let now = names(&h);
+    assert_eq!(h.state().session.path.as_deref(), Some(paths[0].to_string_lossy().as_ref()), "the first one opened");
+    assert!(now.iter().any(|n| n == "Other B.ecproj") && !now.iter().any(|n| n == "Other A.ecproj"), "{now:?}");
 }
