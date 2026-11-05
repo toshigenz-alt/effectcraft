@@ -1,8 +1,9 @@
 //! EffectCraft's panels in craft-ui's shared docking. craft-ui draws the frames, tab strips,
 //! stacked panels, floating windows, dividers and drop previews and owns the gestures (drag a tab
 //! onto a group to tab it there or split it off to a side; hold Cmd/Ctrl at the release, or drop
-//! outside every group, to float it). EffectCraft draws the panel bodies, the ≡ panel menu, the
-//! Timeline's comp tabs and the viewer locks in each group header, and runs every layout change
+//! outside every group, to float it). EffectCraft draws the panel bodies, the ≡ panel menu (local:
+//! in the shown tab, beside its name), the Timeline's comp tabs and the viewer locks in each group
+//! header, and runs every layout change
 //! through its command path (`window.dockAction`), so pointer, menu and control-channel changes
 //! share one route.
 
@@ -14,7 +15,6 @@ use egui::{Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::dock::{self, DocAction, DocTab, PanelKind, Workspace, WorkspaceExt as _};
-use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{EffectcraftApp, panels};
 
@@ -23,10 +23,13 @@ pub fn area_id() -> egui::Id {
     egui::Id::unique("effectcraft-docking")
 }
 
-/// Width of the ≡ panel menu button at the end of each tab strip.
-const MENU_W: f32 = 26.0;
-/// Width of the viewer lock before it.
+/// Width of the viewer lock at the end of a tab strip.
 const LOCK_W: f32 = 18.0;
+/// Local: room after the shown tab's name for its ≡ panel menu (each tab its own ≡, beside its
+/// name, as before the craft-ui docking moved it to one ≡ at the strip's end).
+const TAB_MENU_GAP: &str = "      ";
+/// Left padding of a tab's label in craft-ui (half its 24 pt `TAB_PADDING`).
+const TAB_LABEL_INSET: f32 = 12.0;
 
 /// The smallest and largest native panel window, in points.
 pub const PANEL_WINDOW_MIN: [f32; 2] = [160.0, 100.0];
@@ -798,8 +801,42 @@ fn window_bodies(window: &Floating<PanelKind>) -> usize {
 
 impl EffectContent<'_> {
     fn header_width(&self, active: PanelKind, strip_width: f32) -> f32 {
-        let lock = if has_lock(active) { LOCK_W } else { 0.0 };
-        (lock + MENU_W).min(strip_width * 2.0 / 3.0).max(MENU_W)
+        // Local: only the viewer lock is left at the strip's end; the ≡ is in the tab.
+        if has_lock(active) { (LOCK_W + 6.0).min(strip_width * 2.0 / 3.0) } else { 0.0 }
+    }
+
+    /// Local: the ≡ panel menu of the shown panel, beside its name in its own tab. Drawn after
+    /// the body, in the tab's layer, so it is registered after the tab and takes the click; the
+    /// tab's rect comes from craft-ui's tab id (`area.with(("tab", panel))`).
+    fn tab_menu(&mut self, ui: &mut egui::Ui, panel: PanelKind) {
+        let t = self.tokens;
+        let Some(tab) = ui.ctx().read_response(area_id().with(("tab", panel))) else { return };
+        let clip = tab.interact_rect;
+        if clip.width() < 20.0 || clip.height() <= 0.0 {
+            return;
+        }
+        let logical = self.logical_label(&panel);
+        let font = self.style.font.clone();
+        let label_w = self.label(ui, &panel, &logical, &font, t.tab_text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font).size().x;
+        let right = (tab.rect.left() + TAB_LABEL_INSET + label_w).min(tab.rect.right() - 4.0);
+        let glyph = Rect::from_min_max(pos2(right - 12.0, tab.rect.center().y - 5.0), pos2(right, tab.rect.center().y + 5.0));
+        let hit = glyph.expand(3.0);
+        let mut child = ui.new_child(egui::UiBuilder::new().layer_id(tab.layer_id).max_rect(hit));
+        child.set_clip_rect(clip);
+        let response = child.interact(hit, egui::Id::unique(("panel-menu-button", panel.id())), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
+        self.app.auto.add_response(&format!("panel.menu.{}", panel.id()), &response, "panel menu");
+        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
+        let painter = child.painter().with_clip_rect(clip);
+        for dy in [-3.5, 0.0, 3.5] {
+            let y = glyph.center().y + dy;
+            painter.line_segment([pos2(glyph.min.x, y), pos2(glyph.max.x, y)], Stroke::new(1.5, color));
+        }
+        crate::widgets::focus_outline(&child, &response, &t);
+        if response.clicked() {
+            self.app.ui.focused = panel;
+            self.menu = Some((panel, glyph.left_bottom(), ui.ctx().viewport_id()));
+        }
     }
 
     /// Whether the group of `panels` shows comp tabs: it holds the Timeline and comps are open.
@@ -836,6 +873,7 @@ impl DockContent<PanelKind> for EffectContent<'_> {
         if self.app.ui.focused == *panel {
             ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
         }
+        self.tab_menu(ui, *panel);
     }
 
     fn logical_label(&self, panel: &PanelKind) -> String {
@@ -849,12 +887,22 @@ impl DockContent<PanelKind> for EffectContent<'_> {
     /// The tab names what the panel shows ("Composition Intro"), after the label swatch of its
     /// comp or layer. With comps open, the Timeline's own tab is just "Timeline"; each comp has a
     /// tab of its own after the group's panel tabs.
+    /// Local: the shown panel's name ends in room for its ≡ (see [`EffectContent::tab_menu`]).
     fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
         let title = self.titles.iter().find(|(p, _)| p == panel).map_or(logical, |(_, s)| s.as_str());
-        let Some((_, swatch)) = self.swatches.iter().find(|(p, _)| p == panel) else { return title.into() };
+        let swatch = self.swatches.iter().find(|(p, _)| p == panel).map(|(_, c)| *c);
+        let menu = self.app.ui.dock.is_visible(*panel);
+        if swatch.is_none() && !menu {
+            return title.into();
+        }
         let mut job = egui::text::LayoutJob::default();
-        job.append("■ ", 0.0, egui::TextFormat::simple(font.clone(), *swatch));
+        if let Some(swatch) = swatch {
+            job.append("■ ", 0.0, egui::TextFormat::simple(font.clone(), swatch));
+        }
         job.append(title, 0.0, egui::TextFormat::simple(font.clone(), color));
+        if menu {
+            job.append(TAB_MENU_GAP, 0.0, egui::TextFormat::simple(font.clone(), color));
+        }
         job.into()
     }
 
@@ -862,28 +910,16 @@ impl DockContent<PanelKind> for EffectContent<'_> {
         self.header_width(*active, strip_width)
     }
 
-    /// The viewer lock and the ≡ panel menu of the shown panel.
+    /// The viewer lock of the shown panel (local: its ≡ is in its tab, [`EffectContent::tab_menu`]).
     fn group_header(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
         let t = self.tokens;
         let header = ui.max_rect();
-        let menu = Rect::from_min_max(pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
         if has_lock(*active) {
-            let lock = Rect::from_center_size(pos2(menu.min.x - LOCK_W / 2.0, header.center().y), vec2(14.0, 14.0));
+            let lock = Rect::from_center_size(pos2(header.max.x - 3.0 - LOCK_W / 2.0, header.center().y), vec2(14.0, 14.0));
             let locked = self.app.ui.locked_tabs.contains(&active.id());
             if dock::lock_button(ui, lock, *active, locked, &t, &mut self.app.auto) {
                 self.locks.push(*active);
             }
-        }
-        let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
-        let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
-        self.app.auto.add_response(&format!("panel.menu.{}", active.id()), &response, "panel menu");
-        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
-        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::Hamburger, color);
-        crate::widgets::focus_outline(ui, &response, &t);
-        if response.clicked() {
-            self.app.ui.focused = *active;
-            self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
     }
 

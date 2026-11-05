@@ -378,3 +378,59 @@ fn never_placed_panels_open_at_their_default_place() {
     invoke(&mut app, "window.panel", json!({"panel": "History"})).unwrap();
     assert!(app.ui.dock.group_of(PanelKind::History).contains(&PanelKind::Timeline));
 }
+
+/// Local: each shown tab carries its own ≡ beside its name (not one ≡ at the strip's end for the
+/// whole group), and the Project tab's ≡ opens the Project panel's menu with Project Panel
+/// Settings…. `EC_TAB_MENU_SNAPSHOT=<file.png>` also saves a screenshot with the Project menu open.
+#[test]
+fn each_shown_tab_has_its_own_panel_menu_beside_its_name() {
+    let mut session = Session::default();
+    session.execute("comp.new", json!({"name": "Tab menus", "width": 320, "height": 180, "duration": 4})).unwrap();
+    let mut app = EffectcraftApp::new(session);
+    app.ui.start_screen = false;
+    app.ui.dock = dock::docked(dock::vsplit(
+        SplitSize::Ratio(0.62),
+        dock::hsplit(
+            SplitSize::FixedFirst(420.0),
+            dock::tabs(&[PanelKind::Project, PanelKind::EffectControls], 0),
+            dock::tabs(&[PanelKind::Composition, PanelKind::Layer], 0),
+        ),
+        dock::tabs(&[PanelKind::Timeline], 0),
+    ));
+    let snapshot = std::env::var_os("EC_TAB_MENU_SNAPSHOT").map(std::path::PathBuf::from);
+    let mut builder = Harness::builder().with_size(vec2(1200.0, 760.0)).with_max_steps(10_000);
+    if snapshot.is_some() {
+        builder = builder.wgpu();
+    }
+    let mut h = builder.build_eframe(move |_| app);
+    h.run_steps(4);
+    let click = |h: &mut Harness<'_, EffectcraftApp>, at: egui::Pos2| {
+        h.event(Event::PointerMoved(at));
+        h.step();
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(3);
+    };
+    // The ≡ sits inside the shown tab, at its right; the hidden tab has none.
+    let tab = rect(&h, "panel.tab.Project");
+    let menu = rect(&h, "panel.menu.Project");
+    assert!(tab.expand(1.0).contains_rect(menu), "≡ {menu:?} inside the Project tab {tab:?}");
+    assert!(menu.center().x > tab.center().x, "≡ after the name");
+    assert!(h.state().auto.find("panel.menu.EffectControls").is_none(), "a hidden tab shows no ≡");
+    let comp_menu = rect(&h, "panel.menu.Composition");
+    assert!(rect(&h, "panel.tab.Composition").expand(1.0).contains_rect(comp_menu), "the Composition tab has its own ≡");
+    // The Project tab's ≡ opens the Project panel's menu.
+    click(&mut h, menu.center());
+    assert!(h.state().auto.find("panelMenu.projectSettings").is_some(), "Project Panel Settings… in the Project ≡");
+    assert_eq!(h.state().ui.dock.group_of(PanelKind::Project), vec![PanelKind::Project, PanelKind::EffectControls], "the click moved nothing");
+    if let Some(path) = &snapshot {
+        h.render().unwrap().save(path).unwrap();
+    }
+    let item = rect(&h, "panelMenu.projectSettings").center();
+    click(&mut h, item);
+    assert!(h.state().ui.project_settings_open, "the item opens Project Panel Settings");
+    // The Composition tab's ≡ opens the Composition menu, without the Project item.
+    click(&mut h, comp_menu.center());
+    assert!(h.state().auto.find("panelMenu.projectSettings").is_none(), "no Project item in the Composition ≡");
+}
