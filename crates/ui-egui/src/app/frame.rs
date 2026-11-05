@@ -640,7 +640,12 @@ impl LiquifyDisarm {
         let viewer_or_controls = |p: PanelKind| matches!(p, PanelKind::Composition | PanelKind::Viewer(_) | PanelKind::EffectControls);
         let other_panel = (app.ui.focused != self.focused || ctx.input(|i| i.pointer.any_pressed())) && !viewer_or_controls(app.ui.focused);
         let st = &app.session.state;
-        if app.ui.tool != self.tool || st.active_comp != self.comp || st.selected_layers != self.layers || st.project_selection != self.project_selection || other_panel {
+        if app.ui.tool != self.tool
+            || st.active_comp != self.comp
+            || st.selected_layers != self.layers
+            || st.project_selection != self.project_selection
+            || other_panel
+        {
             app.ui.fx_liquify_brush.clear();
         } else if st.selected_props != self.props {
             let comp = app.session.active_comp();

@@ -1260,15 +1260,14 @@ fn liquify_buttons(
     let cy2 = y2 + 9.0;
     let speed_lbl = "Speed";
     p.text(pos2(r.min.x + 20.0, cy2), Align2::LEFT_CENTER, speed_lbl, Tokens::ui(11.0), t.text_dim);
-    let (sr, nv, _) =
-        widgets::hot_number_at(
-            ui,
-            pos2(r.min.x + 56.0, y2),
-            egui::Id::unique(("liquify-speed", euid)),
-            app.ui.fx_liquify_speed,
-            &widgets::HotSpec { speed: 0.05, range: (0.1, 20.0), decimals: 1, suffix: "x" },
-            &t,
-        );
+    let (sr, nv, _) = widgets::hot_number_at(
+        ui,
+        pos2(r.min.x + 56.0, y2),
+        egui::Id::unique(("liquify-speed", euid)),
+        app.ui.fx_liquify_speed,
+        &widgets::HotSpec { speed: 0.05, range: (0.1, 20.0), decimals: 1, suffix: "x" },
+        &t,
+    );
     if let Some(nv) = nv {
         app.ui.fx_liquify_speed = nv.clamp(0.1, 20.0);
     }
@@ -1320,6 +1319,29 @@ fn liquify_buttons(
         resp.on_hover_text(full);
         app.auto.add(&format!("effectControls.effect.{euid}.liquify.tool.{i}"), br, full);
     }
+}
+
+/// Local: Liquify's part of the Effect Controls viewer hook. Draws [`liquify_overlay`] for a
+/// Liquify effect `g` (not while another pick is armed, nor with Show Layer Controls off) and
+/// returns whether its armed brush owns the viewer, so the generic effect points are skipped.
+#[allow(clippy::too_many_arguments)]
+pub fn liquify_viewer(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    map: &super::viewer::ViewerMap,
+    ectx: &EvalCtx,
+    layer: &Layer,
+    g: &PropGroup,
+    fm: &Mat3,
+    actions: &mut Actions,
+    picking: bool,
+) -> bool {
+    if picking || !app.ui.viewer.show_layer_controls || !matches!(&g.kind, GroupKind::Effect { effect } if effect == LIQUIFY) {
+        return false;
+    }
+    liquify_overlay(app, ui, painter, map, ectx, layer, g, fm, actions);
+    app.ui.fx_liquify_brush.contains(&g.uid)
 }
 
 /// Liquify on the Composition viewer while its Brush mode is armed: draws the brush circle

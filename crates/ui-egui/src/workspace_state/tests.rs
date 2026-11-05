@@ -391,4 +391,3 @@ fn column_and_split_widths_roundtrip_and_reject_non_finite_values() {
     bad.timeline_left_w = Some(f32::NAN);
     assert!(bad.validate().is_err());
 }
-

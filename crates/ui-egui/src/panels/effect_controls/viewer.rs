@@ -277,11 +277,8 @@ pub fn viewer_hook(
                     crate::panels::fx_editors::mesh_warp_overlay(app, ui, painter, map, ectx, layer, g, &fm, &mut actions);
                 }
                 // Local: the Liquify viewer brush owns the viewer while armed.
-                if !picking && app.ui.viewer.show_layer_controls && matches!(&g.kind, GroupKind::Effect { effect } if effect == crate::panels::fx_editors::LIQUIFY) {
-                    crate::panels::fx_editors::liquify_overlay(app, ui, painter, map, ectx, layer, g, &fm, &mut actions);
-                    if app.ui.fx_liquify_brush.contains(&g.uid) {
-                        continue;
-                    }
+                if crate::panels::fx_editors::liquify_viewer(app, ui, painter, map, ectx, layer, g, &fm, &mut actions, picking) {
+                    continue;
                 }
                 let scope = FxScope { effect: &g.match_id, root: g, path: String::new() };
                 let mut pts = Vec::new();
