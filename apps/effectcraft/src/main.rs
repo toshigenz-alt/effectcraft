@@ -286,7 +286,10 @@ fn main() -> eframe::Result {
             // reported in a toast and forgotten).
             let _ = session.execute("window.restoreScriptPanels", json!({}));
             let mut app = EffectcraftApp::new(session);
-            app.set_startup_update_check(true);
+            // Local build: no startup update check. Its one-click self-update would replace this
+            // binary with the upstream release, and every local feature with it. Help ▸ Check for
+            // Updates still checks when asked.
+            app.set_startup_update_check(false);
             app.set_gpu_failure_bridge(gpu_failures);
             app.ui.start_screen = show_home;
             if let Some(n) = notice {
