@@ -872,6 +872,20 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
                 _ => app.ui.status = "Interpret Footage: select a footage item".into(),
             }
         }
+        // Local: items dropped on Create a new Folder go into a new folder (After Effects): the
+        // dragged row, or the whole selection when the row is part of it.
+        if id == "newFolder"
+            && let Some(DragPayload::Item(iid)) = egui::DragAndDrop::payload::<DragPayload>(&ctx).as_deref()
+            && ui.rect_contains_pointer(r)
+        {
+            p.rect_stroke(r, 4.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+            if ctx.input(|i| i.pointer.any_released()) {
+                let iid = ItemId(*iid);
+                let selected = app.session.state.project_selection.contains(&iid);
+                actions.push(("project.newFolder".into(), json!({"items": targets(app, iid, selected)})));
+                egui::DragAndDrop::clear_payload(&ctx);
+            }
+        }
         // Items dropped on Create a new Composition: New Comp from Selection with them (After
         // Effects; several items ask how in its dialog).
         if id == "newComp"
@@ -1315,7 +1329,8 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 &it.name,
                 Tokens::ui(12.0),
                 name_clip.max.x - (x0 + 30.0) - 2.0,
-                if selected { Color32::from_gray(0x16) } else { t.text },
+                // Local: the name in its kind's colour (Project Panel Settings ▸ Color Display).
+                if selected { Color32::from_gray(0x16) } else { crate::panels::project_settings::name_color(app, it).unwrap_or(t.text) },
             );
         }
         label_swatch(app, ui, &g, it, label_x, selected, &mut actions);
@@ -1332,6 +1347,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // Part of the row: not a second Tab stop.
         let nresp = ui.interact(name_clip, egui::Id::unique(("pname", id.0)), Sense::CLICK | Sense::DRAG);
         app.auto.add(&format!("project.item.{}.name", id.0), name_clip, &it.name);
+        // Local: a name cut short shows in full in a yellow tip.
+        if nresp.hovered() && crate::panels::name_tip::is_cut(ui, &it.name, &Tokens::ui(12.0), name_clip.max.x - (x0 + 30.0) - 2.0) {
+            crate::panels::name_tip::show(ui, &mut app.auto, &format!("project.{}", id.0), name_clip, &it.name, Tokens::ui(12.0));
+        }
         let resp = resp.union(nresp);
         if resp.clicked() {
             select_click(app, ui, &ctx, *id, &rows);

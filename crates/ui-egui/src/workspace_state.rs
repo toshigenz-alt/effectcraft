@@ -37,6 +37,9 @@ struct Snapshot {
     /// Local: user-resized Project panel column widths.
     #[serde(default)]
     project_col_widths: BTreeMap<String, f32>,
+    /// Local: Project Panel Settings ▸ Color Display (`None`: the Default set).
+    #[serde(default)]
+    project_name_colors: Option<BTreeMap<String, [u8; 3]>>,
 }
 
 /// Local: the largest column or pane width a workspace file may hold.
@@ -54,6 +57,7 @@ impl Snapshot {
             timeline_col_widths: ui.timeline.col_widths.clone(),
             timeline_left_w: ui.timeline.custom_left_w,
             project_col_widths: ui.project_col_widths.clone(),
+            project_name_colors: ui.project_name_colors.clone(),
         }
     }
 
@@ -66,6 +70,7 @@ impl Snapshot {
         ui.timeline.col_widths = self.timeline_col_widths;
         ui.timeline.custom_left_w = self.timeline_left_w;
         ui.project_col_widths = self.project_col_widths;
+        ui.project_name_colors = self.project_name_colors;
         // A native window's place is made safe to hand to the windowing system.
         for workspace in std::iter::once(&mut ui.dock).chain(ui.saved_workspaces.values_mut()) {
             for window in &mut workspace.layout.floating {
@@ -101,6 +106,9 @@ impl Snapshot {
         let width_bad = |w: f32| !w.is_finite() || !(0.0..=MAX_COLUMN_WIDTH).contains(&w);
         if self.timeline_left_w.is_some_and(width_bad) || self.timeline_col_widths.values().chain(self.project_col_widths.values()).any(|w| width_bad(*w)) {
             return Err("invalid workspace column width".into());
+        }
+        if self.project_name_colors.as_ref().is_some_and(|m| m.len() > 64 || m.keys().any(|k| k.is_empty() || k.len() > 64)) {
+            return Err("invalid Project panel colours".into());
         }
         if !panel_ok(self.focused) || self.maximized.is_some_and(|panel| !panel_ok(panel)) {
             return Err("workspace viewer ID is outside the supported range 1–65535".into());
@@ -188,6 +196,7 @@ impl WorkspaceStore {
             || self.saved.timeline_col_widths != ui.timeline.col_widths
             || self.saved.timeline_left_w != ui.timeline.custom_left_w
             || self.saved.project_col_widths != ui.project_col_widths
+            || self.saved.project_name_colors != ui.project_name_colors
     }
 
     pub(crate) fn save(&mut self, config: Option<&dyn ConfigStore>, ui: &UiState) -> Result<bool, String> {

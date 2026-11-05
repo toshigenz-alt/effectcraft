@@ -57,14 +57,42 @@ fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 fn new_folder(s: &mut Session, p: &Value) -> Result<Value> {
+    let c = "project.newFolder";
     let name = str_p(p, "name").unwrap_or("Untitled Folder").to_string();
-    let parent = p.get("parent").and_then(Value::as_u64).map(ItemId).filter(|i| s.project.item(*i).is_some_and(|x| x.is_folder()));
+    // Local: `items` go into the new folder, in the same undo step (items dropped on the Project
+    // panel's Create a new Folder button, as in After Effects).
+    let items: Vec<ItemId> = match p.get("items") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| v.as_u64().map(ItemId).filter(|i| s.project.item(*i).is_some()).ok_or_else(|| bad(c, format!("no project item {v}"))))
+            .collect::<Result<_>>()?,
+        Some(v) => return Err(bad(c, format!("`items` must be an array of item ids, not {v}"))),
+    };
+    let given = p.get("parent").and_then(Value::as_u64).map(ItemId).filter(|i| s.project.item(*i).is_some_and(|x| x.is_folder()));
+    // Without a `parent`, the folder goes where the items are when they share one place, else
+    // at the root.
+    let parent = given.or_else(|| {
+        let mut parents = items.iter().map(|i| s.project.item(*i).and_then(|x| x.parent));
+        let first = parents.next().flatten();
+        parents.all(|q| q == first).then_some(first).flatten()
+    });
+    if let Some(f) = parent
+        && let Some(i) = items.iter().find(|i| super::project_items::is_within(&s.project, f, **i))
+    {
+        return Err(bad(c, format!("can't put folder {} into a new folder inside itself", i.0)));
+    }
     let id = s.edit("New Folder", None, |proj, st| {
         let id = proj.add_item(&name, Label::Yellow, parent, ItemKind::Folder);
+        for i in &items {
+            if let Some(it) = proj.item_mut(*i) {
+                it.parent = Some(id);
+            }
+        }
         st.project_selection = vec![id];
         Ok(id)
     })?;
-    Ok(json!({"item": id.0}))
+    Ok(json!({"item": id.0, "moved": items.len()}))
 }
 
 fn close(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1202,7 +1230,15 @@ fn reveal_in_finder(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("project.newFolder", "New Folder", ["File", "New"], Some("Cmd+Alt+Shift+N"), "{name?, parent?}", always, new_folder),
+        cmd!(
+            "project.newFolder",
+            "New Folder",
+            ["File", "New"],
+            Some("Cmd+Alt+Shift+N"),
+            "{name?, parent?, items?: [id] (local: moved into the new folder, one undo step; without `parent` the folder goes where they all are, else the root)}",
+            always,
+            new_folder
+        ),
         cmd!("file.close", "Close", ["File"], Some("Cmd+W"), "{comp?}", has_comp, close),
         cmd!("file.closeProject", "Close Project", ["File"], None, "{}", always, close_project),
         cmd!("file.saveCopy", "Save a Copy...", ["File", "Save As"], None, "{path}", always, save_copy),

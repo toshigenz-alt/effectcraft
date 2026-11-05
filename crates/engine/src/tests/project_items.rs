@@ -211,3 +211,44 @@ fn used_in_counts_layers_across_comps() {
     assert_eq!(r["comps"], json!([]));
     assert!(s.execute("project.usedIn", json!({"item": "Nope"})).is_err());
 }
+
+/// Local: `project.newFolder {items}` (items dropped on the Project panel's Create a new Folder
+/// button) puts them in a new folder in one undo step: where they all are, else at the root.
+#[test]
+fn new_folder_with_items_moves_them_in_one_undo_step() {
+    let mut s = Session::default();
+    let id = |v: serde_json::Value| ItemId(v["item"].as_u64().unwrap());
+    let shots = id(s.execute("project.newFolder", json!({"name": "Shots"})).unwrap());
+    let a = id(s.execute("file.importPlaceholder", json!({"name": "a.png", "width": 8, "height": 8})).unwrap());
+    let b = id(s.execute("file.importPlaceholder", json!({"name": "b.png", "width": 8, "height": 8})).unwrap());
+    let c = id(s.execute("file.importPlaceholder", json!({"name": "c.png", "width": 8, "height": 8})).unwrap());
+    s.execute("project.move", json!({"items": [a.0, b.0], "folder": shots.0})).unwrap();
+    let parent = |s: &Session, i: ItemId| s.project.item(i).unwrap().parent;
+
+    // Both in Shots: the new folder goes into Shots, holding them.
+    let f = id(s.execute("project.newFolder", json!({"items": [a.0, b.0]})).unwrap());
+    assert!(s.project.item(f).unwrap().is_folder());
+    assert_eq!(parent(&s, f), Some(shots));
+    assert_eq!((parent(&s, a), parent(&s, b)), (Some(f), Some(f)));
+    assert_eq!(s.state.project_selection, vec![f], "the new folder is selected");
+    // One undo removes the folder and puts both back.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.item(f).is_none());
+    assert_eq!((parent(&s, a), parent(&s, b)), (Some(shots), Some(shots)));
+
+    // From two places (Shots and the root): the folder goes to the root.
+    let g = id(s.execute("project.newFolder", json!({"items": [a.0, c.0]})).unwrap());
+    assert_eq!(parent(&s, g), None);
+    assert_eq!((parent(&s, a), parent(&s, c)), (Some(g), Some(g)));
+
+    // A folder can't go into a new folder made inside itself; nothing changes.
+    let before = s.project.items.len();
+    assert!(s.execute("project.newFolder", json!({"items": [shots.0], "parent": shots.0})).is_err());
+    assert_eq!(s.project.items.len(), before);
+    // Unknown ids are refused.
+    assert!(s.execute("project.newFolder", json!({"items": [999_999]})).is_err());
+    assert_eq!(s.project.items.len(), before);
+    // Without `items` it is the plain New Folder.
+    let plain = id(s.execute("project.newFolder", json!({})).unwrap());
+    assert_eq!(parent(&s, plain), None);
+}

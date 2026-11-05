@@ -3068,7 +3068,13 @@ fn layer_name(app: &mut EffectcraftApp, ui: &mut egui::Ui, g: &mut Rw, rc: &RowC
             lp.rect_filled(cell, 0.0, SELECTED_NAME_BG);
         }
         let lpn = lp.with_clip_rect(name_rect.intersect(lp.clip_rect()));
-        lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, display_name(app, layer), Tokens::ui(12.0), name_col);
+        let name = display_name(app, layer);
+        lpn.text(pos2(name_rect.min.x, cy), Align2::LEFT_CENTER, &name, Tokens::ui(12.0), name_col);
+        // Local: a name cut short shows in full in a yellow tip.
+        let shown = name_rect.intersect(lp.clip_rect());
+        if shown.width() > 0.0 && crate::panels::name_tip::is_cut(ui, &name, &Tokens::ui(12.0), shown.max.x - name_rect.min.x) {
+            crate::panels::name_tip::show(ui, &mut app.auto, &format!("timeline.{}", layer.id.0), shown, &name, Tokens::ui(12.0));
+        }
     }
 }
 

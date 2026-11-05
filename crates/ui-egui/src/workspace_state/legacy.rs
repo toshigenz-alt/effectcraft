@@ -129,6 +129,7 @@ pub(super) fn migrate(value: serde_json::Value, ui: &UiState) -> Result<(Snapsho
         timeline_col_widths: old.timeline_col_widths,
         timeline_left_w: old.timeline_left_w,
         project_col_widths: old.project_col_widths,
+        project_name_colors: None,
     };
     Ok((snapshot, outer))
 }

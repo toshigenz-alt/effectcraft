@@ -33,6 +33,8 @@ pub mod live_preview;
 pub mod markers_ui;
 pub mod media_panels;
 pub mod misc;
+/// Local: the full name of a long Project item or layer name, in a yellow tip.
+pub mod name_tip;
 pub mod object_matte_tool;
 pub mod paint_panels;
 pub mod panel_kit;
@@ -41,6 +43,8 @@ pub mod precomp;
 pub(crate) mod preview_merge;
 pub mod primitive_dialog;
 pub mod project;
+/// Local: Project Panel Settings (Color Display).
+pub mod project_settings;
 pub mod properties;
 pub mod puppet_tool;
 pub mod render_queue;
@@ -395,6 +399,15 @@ pub(crate) fn panel_menu_area(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
                             let _ = crate::menus::invoke(app, &ui.ctx().clone(), cmd, serde_json::json!({}));
                             close = true;
                         }
+                    }
+                }
+                // Local: Project Panel Settings.
+                PanelKind::Project => {
+                    let r = ui.button(tr("Project Panel Settings…"));
+                    app.auto.add("panelMenu.projectSettings", r.rect, "Project Panel Settings…");
+                    if r.clicked() {
+                        app.ui.project_settings_open = true;
+                        close = true;
                     }
                 }
                 _ => {

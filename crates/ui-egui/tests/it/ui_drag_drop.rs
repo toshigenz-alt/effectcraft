@@ -290,6 +290,39 @@ fn project_items_dropped_on_new_comp_make_a_composition() {
     assert_eq!(comps(&h), before + 1, "nothing made yet");
 }
 
+/// Local: Project items dropped on Create a new Folder go into a new folder (After Effects):
+/// the dragged item, or the whole selection when it is part of it; one undo step.
+#[test]
+fn project_items_dropped_on_new_folder_go_into_a_new_folder() {
+    use effectcraft_engine::project::ItemId;
+    let (mut h, clip) = harness();
+    let folders = |h: &Harness<'_, EffectcraftApp>| h.state().session.project.items.values().filter(|i| i.is_folder()).map(|i| i.id).collect::<Vec<_>>();
+    let parent = |h: &Harness<'_, EffectcraftApp>, i: ItemId| h.state().session.project.item(i).unwrap().parent;
+    // The folders the project had before: the new one is whatever is not among them.
+    let before = folders(&h);
+    let new_folders = |h: &Harness<'_, EffectcraftApp>| folders(h).into_iter().filter(|f| !before.contains(f)).collect::<Vec<_>>();
+    let start = parent(&h, ItemId(clip));
+    let button = rect(&h, "project.newFolder").center();
+    let item = rect(&h, &format!("project.item.{clip}.name")).center();
+    drag(&mut h, item, button, Modifiers::NONE);
+    let made = new_folders(&h);
+    assert_eq!(made.len(), 1, "one new folder");
+    assert_eq!(parent(&h, ItemId(clip)), Some(made[0]), "holding the dragged item");
+    h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+    h.run_steps(2);
+    assert!(new_folders(&h).is_empty() && parent(&h, ItemId(clip)) == start, "one undo step");
+
+    // Two selected items, one dragged: both go in.
+    let main = h.state().session.project.items.values().find(|i| i.name == "Main").unwrap().id;
+    h.state_mut().session.state.project_selection = vec![ItemId(clip), main];
+    h.run_steps(2);
+    let item = rect(&h, &format!("project.item.{clip}.name")).center();
+    drag(&mut h, item, button, Modifiers::NONE);
+    let made = new_folders(&h);
+    assert_eq!(made.len(), 1);
+    assert_eq!((parent(&h, ItemId(clip)), parent(&h, main)), (Some(made[0]), Some(made[0])), "the whole selection");
+}
+
 /// #649: a Project footage item dropped into an empty Timeline makes a composition
 /// with that item's dimensions, frame rate, duration, and a source layer.
 #[test]

@@ -391,3 +391,22 @@ fn column_and_split_widths_roundtrip_and_reject_non_finite_values() {
     bad.timeline_left_w = Some(f32::NAN);
     assert!(bad.validate().is_err());
 }
+
+// Local: Project Panel Settings ▸ Color Display is kept with the layouts: never set (the Default
+// set), the user's own, and Original (an empty map) each survive a save.
+#[test]
+fn project_name_colors_roundtrip() {
+    for colors in [None, Some(BTreeMap::from([("comp".to_string(), [1u8, 2, 3])])), Some(BTreeMap::new())] {
+        let config = MemoryConfig::default();
+        let mut ui = UiState::default();
+        let mut store = WorkspaceStore::load(Some(&config), &mut ui);
+        ui.project_name_colors = colors.clone();
+        // A change from the loaded state is a change to save; `None` is the loaded state.
+        assert_eq!(store.has_changes(&ui), colors.is_some());
+        store.save_now(Some(&config), &ui).unwrap();
+        let mut restored = UiState::default();
+        let loaded = WorkspaceStore::load(Some(&config), &mut restored);
+        assert!(loaded.error.is_none());
+        assert_eq!(restored.project_name_colors, colors);
+    }
+}

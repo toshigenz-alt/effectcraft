@@ -660,6 +660,13 @@ pub struct UiState {
     /// User-resized Project panel column widths (`name`, `type`, `size`, `duration`, `fps`, `path`, `comment`).
     #[serde(default)]
     pub project_col_widths: BTreeMap<String, f32>,
+    /// Local: the Project panel's name colour per item kind (`panels::project_settings`): `None`
+    /// is the Default set, `Some(map)` the user's (missing kinds keep the original colour).
+    #[serde(default)]
+    pub project_name_colors: Option<BTreeMap<String, [u8; 3]>>,
+    /// Local: the Project Panel Settings window is open.
+    #[serde(skip)]
+    pub project_settings_open: bool,
     /// Horizontal scroll of the Project panel's optional columns (Name and Label stay put).
     #[serde(default)]
     pub project_hscroll: f32,
@@ -775,6 +782,8 @@ impl Default for UiState {
             project_scroll: 0.0,
             project_columns: default_project_columns(),
             project_col_widths: BTreeMap::new(),
+            project_name_colors: None,
+            project_settings_open: false,
             fx_closed: BTreeSet::new(),
             fx_slider_open: BTreeSet::new(),
             fx_pick: None,
