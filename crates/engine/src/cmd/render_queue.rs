@@ -950,13 +950,22 @@ fn set_template_default(s: &mut Session, p: &Value) -> Result<Value> {
     let kind = kind_p(p, C)?;
     let slot = str_p(p, "slot").and_then(TemplateSlot::parse).ok_or_else(|| bad(C, "slot: movie|still|preRender|movieProxy|stillProxy"))?;
     let name = name_p(p, C)?.to_string();
+    // Local: `app` also makes it the default new projects start from (Output Module, Movie only).
+    let app = super::b_p(p, "app") == Some(true);
+    if app && (kind != TemplateKind::OutputModule || slot != TemplateSlot::Movie) {
+        return Err(bad(C, "app: only the Output Module's Movie Default is application-wide"));
+    }
     let mut t = s.project.render_templates.clone();
     t.set_default(kind, slot, &name).map_err(|e| bad(C, e))?;
     s.edit("Template Default", None, |proj, _| {
         proj.render_templates = t;
         Ok(())
     })?;
-    Ok(json!({"slot": format!("{slot:?}"), "name": name}))
+    if app {
+        s.prefs.project.default_output_module = name.clone();
+        s.save_prefs();
+    }
+    Ok(json!({"slot": format!("{slot:?}"), "name": name, "app": app}))
 }
 
 /// Apply templates to an item: `renderSettings` and/or `outputModule` (to `module`).
@@ -1101,7 +1110,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Template Default",
             [],
             None,
-            "{kind: renderSettings|outputModule, slot: movie|still|preRender|movieProxy|stillProxy, name}",
+            "{kind: renderSettings|outputModule, slot: movie|still|preRender|movieProxy|stillProxy, name, app?: bool (also the Output Module Movie Default of new projects)}",
             always,
             set_template_default
         ),

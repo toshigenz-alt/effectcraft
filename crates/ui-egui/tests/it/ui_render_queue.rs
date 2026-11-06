@@ -95,3 +95,40 @@ fn clicking_the_output_file_name_opens_the_save_dialog() {
     assert_eq!(asked.borrow().len(), 1, "Alt-click does not open the dialog");
     assert_eq!(editing(&h).map(|(item, _)| item), Some(id), "the template editor is open");
 }
+
+/// Local: right-click an Output Module template in an item's menu ▸ Set as Default: the open
+/// project's Movie Default and the one new projects start from.
+#[test]
+fn right_click_an_output_module_template_sets_it_as_the_default() {
+    use effectcraft_engine::project::render_templates::{TemplateKind, TemplateSlot};
+    const MBPS40: &str = "H.264 - Match Render Settings - 40 Mbps";
+    // An exporter that writes nothing: the menu lists the templates of its formats.
+    let sink: std::sync::Arc<dyn Fn(&str, Vec<u8>) + Send + Sync> = std::sync::Arc::new(|_: &str, _: Vec<u8>| {});
+    let mut s = Session { exporter: Some(std::sync::Arc::new(effectcraft_host::FileExporter { sink: Some(sink) })), ..Default::default() };
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("renderQueue.add", json!({})).unwrap();
+    let id = s.project.render_queue[0].id;
+    let mut app = Some(EffectcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| app.take().expect("app"));
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("rq-ui"), (vec![id], None::<u64>)));
+    h.state_mut().show_panel(PanelKind::RenderQueue);
+    h.run_steps(4);
+    let dd = h.state().auto.find(&format!("renderQueue.item.{id}.outputModule")).expect("Output Module menu").clone();
+    click_at(&mut h, pos2(dd.rect[0] + dd.rect[2] / 2.0, dd.rect[1] + dd.rect[3] / 2.0));
+    let entry = h.query_by_label_contains(MBPS40).expect("the 40 Mbps entry").rect();
+    let p = entry.center();
+    h.input_mut().events.push(Event::PointerMoved(p));
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    h.input_mut().events.push(Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_ne!(h.state().session.project.render_queue[0].output.name, MBPS40, "a right-click does not choose the template");
+    let set = h.query_by_label_contains("Set as Default").expect("the Set as Default entry").rect();
+    click_at(&mut h, set.center());
+    let movie = |s: &Session| s.project.render_templates.default_name(TemplateKind::OutputModule, TemplateSlot::Movie);
+    assert_eq!(movie(&h.state().session), MBPS40);
+    assert_eq!(h.state().session.prefs.project.default_output_module, MBPS40);
+    assert!(h.query_by_label_contains("Set as Default").is_none(), "the menu closed");
+    h.state_mut().session.execute("file.newProject", json!({})).unwrap();
+    assert_eq!(movie(&h.state().session), MBPS40, "a new project starts from it");
+}

@@ -22,6 +22,25 @@ impl Session {
         crate::commands::scripts::load_script_settings(self);
         self.prefs_changed();
         self.shortcuts_changed();
+        // Local: the untitled project at launch is a new project too.
+        if self.path.is_none() && self.project.items.is_empty() && self.project.render_queue.is_empty() {
+            self.apply_app_output_module_default();
+        }
+    }
+
+    /// Local: give the (new) project the application-wide Output Module Movie Default
+    /// (`prefs.project.defaultOutputModule`), when it names a template the project has. Not an
+    /// undo step: the project was just made.
+    pub fn apply_app_output_module_default(&mut self) {
+        use effectcraft_project::render_templates::{TemplateKind, TemplateSlot};
+        let name = self.prefs.project.default_output_module.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let mut t = self.project.render_templates.clone();
+        if t.set_default(TemplateKind::OutputModule, TemplateSlot::Movie, &name).is_ok() {
+            std::sync::Arc::make_mut(&mut self.project).render_templates = t;
+        }
     }
 
     /// Settings changed: apply what the engine owns (cache budgets) and tell frontends.

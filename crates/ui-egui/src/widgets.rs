@@ -843,6 +843,22 @@ pub fn focus_when_opened(ui: &Ui, id: egui::Id, entry: &Response) {
 
 /// Show a popup menu anchored at `pos` with string options; returns the chosen index.
 pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String], current: Option<usize>) -> Option<usize> {
+    match popup_menu_picks(ui, id, pos, options, current) {
+        Some(Picked::Primary(i)) => Some(i),
+        _ => None,
+    }
+}
+
+/// Local: how an entry of [`popup_menu_picks`] was picked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picked {
+    Primary(usize),
+    /// Right-clicked (the list closes; the caller may offer a context menu for the entry).
+    Secondary(usize),
+}
+
+/// Local: [`popup_menu`] that also reports a right-click on an entry.
+pub fn popup_menu_picks(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String], current: Option<usize>) -> Option<Picked> {
     if !popup_is_open(ui, id) {
         return None;
     }
@@ -862,7 +878,9 @@ pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String]
                 }
                 first = false;
                 if r.clicked() {
-                    chosen = Some(i);
+                    chosen = Some(Picked::Primary(i));
+                } else if r.secondary_clicked() {
+                    chosen = Some(Picked::Secondary(i));
                 }
             }
         }

@@ -26,6 +26,7 @@ fn new_project(s: &mut Session, _: &Value) -> Result<Value> {
         return Ok(json!({"template": tpl}));
     }
     s.replace_project(Project::default(), None);
+    s.apply_app_output_module_default();
     s.update_sentinel();
     Ok(Value::Null)
 }

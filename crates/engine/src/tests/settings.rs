@@ -414,6 +414,39 @@ fn new_project_template_and_default_renderer() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+/// Local: Render Queue ▸ right-click an Output Module template ▸ Set as Default
+/// (`renderQueue.setTemplateDefault {app: true}`) sets the open project's Movie Default and the
+/// one new projects start from (File ▸ New and the untitled project at launch); an existing
+/// project keeps its own.
+#[test]
+fn set_as_default_output_module_also_applies_to_new_projects() {
+    use effectcraft_project::render_templates::{TemplateKind, TemplateSlot};
+    const MBPS40: &str = "H.264 - Match Render Settings - 40 Mbps";
+    let movie = |s: &Session| s.project.render_templates.default_name(TemplateKind::OutputModule, TemplateSlot::Movie);
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store.clone()), ..Default::default() };
+    let built_in = movie(&s);
+    assert_ne!(built_in, MBPS40);
+    assert!(s.project.render_templates.output_module(MBPS40).is_some(), "a built-in template");
+    s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": MBPS40, "app": true})).unwrap();
+    assert_eq!(movie(&s), MBPS40, "the open project");
+    s.execute("file.newProject", json!({})).unwrap();
+    assert_eq!(movie(&s), MBPS40, "File ▸ New");
+    // The next launch's untitled project.
+    let mut next = Session { config: Some(store.clone()), ..Default::default() };
+    next.load_settings();
+    assert_eq!(movie(&next), MBPS40, "a new launch");
+    // Without `app` only the open project changes; another slot can't be app-wide.
+    next.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": "Lossless"})).unwrap();
+    next.execute("file.newProject", json!({})).unwrap();
+    assert_eq!(movie(&next), MBPS40);
+    assert!(next.execute("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "still", "name": "PNG Sequence", "app": true})).is_err());
+    // A name new projects lack (a project's own template) leaves the built-in default.
+    next.prefs.project.default_output_module = "Only In One Project".into();
+    next.execute("file.newProject", json!({})).unwrap();
+    assert_eq!(movie(&next), built_in);
+}
+
 #[test]
 fn project_files_are_indented_unless_compact_is_on() {
     let d = tmp("compact-project-files");

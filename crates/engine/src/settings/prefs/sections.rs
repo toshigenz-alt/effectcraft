@@ -68,6 +68,10 @@ page!(ProjectPrefs {
     /// Write `.ecproj` files as compact JSON on one line (smaller, faster to save and open). Off:
     /// indented, one value per line, so they read and diff cleanly in version control.
     compact_project_files: bool = false,
+    /// Local: the Output Module template new projects start from for Movie Default (right-click
+    /// a template in the Render Queue ▸ Set as Default). Empty, or a name a new project lacks:
+    /// the built-in default.
+    default_output_module: String = String::new(),
 });
 
 page!(AutoSave {
