@@ -290,6 +290,38 @@ fn project_items_dropped_on_new_comp_make_a_composition() {
     assert_eq!(comps(&h), before + 1, "nothing made yet");
 }
 
+/// Local: an EXR named `*cryp*` dropped on Create a new Composition gets Cryptomatte showing
+/// Colors, as a drop on the Timeline does; also when several items ask how in the dialog first.
+#[test]
+fn cryp_exr_dropped_on_new_comp_gets_cryptomatte() {
+    use effectcraft_engine::project::{Footage, FootageKind, ItemId, ItemKind};
+    let (mut h, clip) = harness();
+    let f = Footage { path: "/renders/shot_cryp.exr".into(), kind: FootageKind::Video, width: 64, height: 36, has_video: true, ..Default::default() };
+    let exr = Arc::make_mut(&mut h.state_mut().session.project).add_item("shot_cryp.exr", effectcraft_engine::color::Label::None, None, ItemKind::Footage(f));
+    h.run_steps(3);
+    let effects_of_new_comp = |h: &Harness<'_, EffectcraftApp>| -> Vec<(String, Option<KV>)> {
+        let comp = h.state().session.active_comp().unwrap();
+        let l = comp.layers.iter().find(|l| l.name == "shot_cryp.exr").expect("the EXR's layer");
+        l.effects().map(|e| e.groups().map(|g| (g.match_id.clone(), g.prop("display").map(|d| d.value.clone()))).collect()).unwrap_or_default()
+    };
+    let want = vec![("ec.3d.cryptomatte".to_string(), Some(KV::Enum(0)))];
+    let button = rect(&h, "project.newComp").center();
+    let item = rect(&h, &format!("project.item.{}.name", exr.0)).center();
+    drag(&mut h, item, button, Modifiers::NONE);
+    assert!(h.state().dialog.is_none());
+    assert_eq!(effects_of_new_comp(&h), want, "one item: made at once");
+
+    // Two selected items: the dialog keeps the drop's flag.
+    h.state_mut().session.state.project_selection = vec![exr, ItemId(clip)];
+    h.run_steps(2);
+    let item = rect(&h, &format!("project.item.{}.name", exr.0)).center();
+    drag(&mut h, item, button, Modifiers::NONE);
+    assert_eq!(h.state().dialog, Some(effectcraft_ui_egui::Dialog::Form));
+    let p = h.state_mut().dialog_state_mut().form.params();
+    h.state_mut().session.execute_checked("file.newCompFromSelection", p).unwrap();
+    assert_eq!(effects_of_new_comp(&h), want, "several items, through the dialog");
+}
+
 /// Local: Project items dropped on Create a new Folder go into a new folder (After Effects):
 /// the dragged item, or the whole selection when it is part of it; one undo step.
 #[test]

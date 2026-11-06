@@ -887,7 +887,8 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
             }
         }
         // Items dropped on Create a new Composition: New Comp from Selection with them (After
-        // Effects; several items ask how in its dialog).
+        // Effects; several items ask how in its dialog). Local: a drop, so an EXR named `*cryp*`
+        // gets Cryptomatte as a Timeline drop does (the dialog keeps the flag in its base).
         if id == "newComp"
             && let Some(DragPayload::Item(iid)) = egui::DragAndDrop::payload::<DragPayload>(&ctx).as_deref()
             && ui.rect_contains_pointer(r)
@@ -897,7 +898,7 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
                 if !app.session.state.project_selection.contains(&ItemId(*iid)) {
                     app.session.state.project_selection = vec![ItemId(*iid)];
                 }
-                actions.push(("file.newCompFromSelection".into(), json!({})));
+                actions.push(("file.newCompFromSelection".into(), json!({"autoCryptomatte": true})));
                 egui::DragAndDrop::clear_payload(&ctx);
             }
         }

@@ -564,6 +564,16 @@ mod parent_chain_tests {
         assert!(fx_of(&s, &plain).is_empty());
         let dropped = s.execute("layer.addItem", json!({"item": item.0, "autoCryptomatte": true})).unwrap();
         assert_eq!(fx_of(&s, &dropped), vec![("ec.3d.cryptomatte".to_string(), Some(effectcraft_keyframe::Value::Enum(0)))]);
+
+        // New Comp from Selection passes the flag on to its layers (the Project panel's drop on
+        // Create a new Composition); without it, nothing is attached.
+        s.state.project_selection = vec![item];
+        let first_layer = |s: &Session| json!({"layer": s.active_comp().unwrap().layers[0].id.0});
+        s.execute("file.newCompFromSelection", json!({})).unwrap();
+        assert!(fx_of(&s, &first_layer(&s)).is_empty(), "menu: no Cryptomatte");
+        s.state.project_selection = vec![item];
+        s.execute("file.newCompFromSelection", json!({"autoCryptomatte": true})).unwrap();
+        assert_eq!(fx_of(&s, &first_layer(&s)), vec![("ec.3d.cryptomatte".to_string(), Some(effectcraft_keyframe::Value::Enum(0)))], "drop: Colors");
     }
 
     fn fixture() -> (Session, u64, u64, u64) {

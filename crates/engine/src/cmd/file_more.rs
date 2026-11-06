@@ -194,7 +194,9 @@ fn import_solid(s: &mut Session, p: &Value) -> Result<Value> {
 /// after another (Sequence Layers: `overlap`, `overlapDuration` seconds, `transition`).
 /// `duration`: seconds for stills (default: Settings ▸ Import ▸ Still Footage when it is a
 /// duration, else 10 s).
-/// `addToRenderQueue` queues the new compositions. One undo step.
+/// `addToRenderQueue` queues the new compositions. Local: `autoCryptomatte` is passed on to each
+/// `layer.addItem` (an EXR named `*cryp*` gets Cryptomatte), as the Project panel's drop on
+/// Create a new Composition asks, like a Timeline drop. One undo step.
 fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = s.state.project_selection.iter().copied().filter(|i| s.project.item(*i).is_some_and(|x| !x.is_folder())).collect();
     if items.is_empty() {
@@ -218,6 +220,7 @@ fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
         })
     });
     let queue = b_p(p, "addToRenderQueue").unwrap_or(false);
+    let auto_crypto = b_p(p, "autoCryptomatte").unwrap_or(false);
     let proj = s.project.clone();
     let duration = |i: ItemId| proj.item(i).and_then(|it| it.duration()).filter(|d| *d > Tick::ZERO).unwrap_or(Tick::from_seconds_f64(still));
     let groups: Vec<Vec<ItemId>> = if single { vec![items.clone()] } else { items.iter().map(|i| vec![*i]).collect() };
@@ -255,7 +258,9 @@ fn new_comp_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
             // Added bottom first, so the first selected ends up on top.
             let mut layers = vec![];
             for item in g.iter().rev() {
-                layers.push(s.execute("layer.addItem", json!({"comp": cid.0, "item": item.0, "duration": still}))?["layer"].clone());
+                layers.push(
+                    s.execute("layer.addItem", json!({"comp": cid.0, "item": item.0, "duration": still, "autoCryptomatte": auto_crypto}))?["layer"].clone(),
+                );
             }
             layers.reverse();
             if let Some(q) = &sequence
@@ -1268,7 +1273,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Comp from Selection...",
             ["File"],
             Some("Cmd+Alt+\\"),
-            "{duration? (s, for stills), single?: bool (one comp for all), dimensionsFrom?: index, sequence?: bool, overlap?: bool, overlapDuration? (s), transition?: off|dissolveFront|crossDissolve, addToRenderQueue?: bool} → {comps}",
+            "{duration? (s, for stills), single?: bool (one comp for all), dimensionsFrom?: index, sequence?: bool, overlap?: bool, overlapDuration? (s), transition?: off|dissolveFront|crossDissolve, addToRenderQueue?: bool, autoCryptomatte?: bool (local: an EXR named *cryp* gets Cryptomatte, Display = Colors, as layer.addItem; the Project panel's drop on Create a new Composition)} → {comps}",
             has_project_selection,
             new_comp_from_selection
         ),
