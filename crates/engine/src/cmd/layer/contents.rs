@@ -39,7 +39,13 @@ pub(super) fn mask_props(s: &mut Session, p: &Value) -> Result<Value> {
     let target = p.get("mask").cloned().unwrap_or(json!(1));
     let mode = str_p(p, "mode").and_then(MaskMode::from_name);
     let inverted = b_p(p, "inverted");
-    s.edit("Mask Settings", None, |proj, _| {
+    // Local: the mask's colour (its outline in the viewer, its swatch in the Timeline).
+    let color = super::create::color_p(p, "color").map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8));
+    if p.get("color").is_some() && color.is_none() {
+        return Err(bad("layer.setMask", "color: \"#rrggbb\" or [r, g, b] (0..1)"));
+    }
+    // (`merge`: the colour picker's live changes are one undo step.)
+    s.edit(if color.is_some() && mode.is_none() && inverted.is_none() { "Mask Color" } else { "Mask Settings" }, merge_p(p), |proj, _| {
         let l = layer_mut(proj, cid, lid)?;
         let masks = l.props.sub_mut("masks").ok_or_else(|| bad("layer.setMask", "the layer has no masks (add one with layer.addMask)"))?;
         let g = match &target {
@@ -55,12 +61,15 @@ pub(super) fn mask_props(s: &mut Session, p: &Value) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("layer.setMask", "no such mask"))?;
-        if let GroupKind::Mask { mode: m, inverted: inv, .. } = &mut g.kind {
+        if let GroupKind::Mask { mode: m, inverted: inv, color: c, .. } = &mut g.kind {
             if let Some(mm) = mode {
                 *m = mm;
             }
             if let Some(i) = inverted {
                 *inv = i;
+            }
+            if let Some(rgb) = color {
+                *c = rgb;
             }
         }
         Ok(())

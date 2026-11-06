@@ -186,7 +186,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_layers,
             add_mask
         ),
-        cmd!("layer.setMask", "Mask Mode", [], None, "{layer?, mask: index|uid|name, mode?, inverted?}", has_layers, mask_props),
+        cmd!(
+            "layer.setMask",
+            "Mask Mode",
+            [],
+            None,
+            "{layer?, mask: index|uid|name, mode?, inverted?, color?: \"#rrggbb\"|[r,g,b] (0..1), merge?}",
+            has_layers,
+            mask_props
+        ),
         cmd!(
             "layer.addShapeItem",
             "Add (Shape)",

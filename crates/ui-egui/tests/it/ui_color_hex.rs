@@ -257,3 +257,42 @@ fn the_fields_agree_with_the_hex_code() {
     assert_eq!(value("B:", 1), "179");
     assert_eq!(value("H:", 0), "0°");
 }
+
+/// Local: each Timeline mask row shows its mask's colour (the colour its outline has in the
+/// viewer); clicking it opens the picker, the picked colour is stored on the mask, and a whole
+/// pick is one undo step.
+#[test]
+fn mask_rows_show_a_colour_swatch_that_sets_the_mask_colour() {
+    use effectcraft_engine::project::GroupKind;
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Masks", "width": 320, "height": 180, "duration": 4})).unwrap();
+    let layer = s.execute("layer.newSolid", json!({"name": "Plate", "color": "#40b080"})).unwrap()["layer"].as_u64().unwrap();
+    let m1 = s.execute("layer.addMask", json!({"layer": layer})).unwrap()["mask"].as_u64().unwrap();
+    let m2 = s.execute("layer.addMask", json!({"layer": layer, "shape": "ellipse", "mode": "subtract"})).unwrap()["mask"].as_u64().unwrap();
+    let color = |s: &Session, m: u64| match s.active_comp().unwrap().layer(LayerId(layer)).unwrap().props.find_group(m).unwrap().kind {
+        GroupKind::Mask { color, .. } => color,
+        _ => panic!("not a mask"),
+    };
+    let (c1, c2) = (color(&s, m1), color(&s, m2));
+    let masks = s.active_comp().unwrap().layer(LayerId(layer)).unwrap().props.sub("masks").unwrap().uid;
+    let mut app = EffectcraftApp::new(s);
+    app.show_panel(PanelKind::Timeline);
+    app.toggle_maximize(PanelKind::Timeline);
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(|_| app);
+    h.state_mut().ui.timeline.open_layers.insert(layer);
+    h.state_mut().ui.timeline.open_groups.insert(masks);
+    h.run_steps(4);
+    for m in [m1, m2] {
+        assert!(h.state().auto.find(&format!("timeline.mask.{m}.color")).is_some(), "mask {m} has a swatch");
+    }
+    let undo = h.state().session.history.undo.len();
+    let [x, y, w, ht] = h.state().auto.find(&format!("timeline.mask.{m2}.color")).expect("the swatch").rect;
+    click(&mut h, pos2(x + w / 2.0, y + ht / 2.0));
+    type_hex(&mut h, "#FF8000");
+    assert_eq!(color(&h.state().session, m2), [255, 128, 0]);
+    type_hex(&mut h, "#00FF00");
+    assert_eq!(color(&h.state().session, m2), [0, 255, 0]);
+    assert_eq!(color(&h.state().session, m1), c1, "the other mask keeps its colour");
+    assert_ne!(c2, [0, 255, 0]);
+    assert_eq!(h.state().session.history.undo.len(), undo + 1, "one undo step for the pick");
+}

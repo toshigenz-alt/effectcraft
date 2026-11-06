@@ -2140,7 +2140,7 @@ fn group_row(app: &mut EffectcraftApp, ui: &mut egui::Ui, g: &mut Rw, rc: &RowCt
     group_switches(app, ui, g, rc);
     group_name(app, ui, g, rc, &shown);
     group_popups(app, ui, g, rc);
-    group_mask_mode(ui, g, rc);
+    group_mask_mode(app, ui, g, rc);
     group_row_click(app, ui, g, rc);
 }
 
@@ -3669,8 +3669,8 @@ fn group_popups(app: &mut EffectcraftApp, ui: &mut egui::Ui, g: &mut Rw, rc: &Ro
     dash_buttons(app, ui, &lp, layer, *uid, pos2(cw.switches, cy), &mut *actions);
 }
 
-/// Mask mode and inverted, inline.
-fn group_mask_mode(ui: &mut egui::Ui, g: &mut Rw, rc: &RowCtx<'_>) {
+/// Mask colour swatch, mode and inverted, inline.
+fn group_mask_mode(app: &mut EffectcraftApp, ui: &mut egui::Ui, g: &mut Rw, rc: &RowCtx<'_>) {
     let t = g.tl.t;
     let cw = &g.tl.cw;
     let actions = &mut g.tl.actions;
@@ -3680,9 +3680,25 @@ fn group_mask_mode(ui: &mut egui::Ui, g: &mut Rw, rc: &RowCtx<'_>) {
     let RowKind::Group { uid, .. } = &rc.row.kind else { return };
     // Mask mode + inverted inline.
     if let Some(g) = layer.props.find_group(*uid)
-        && let GroupKind::Mask { mode, inverted, .. } = g.kind
+        && let GroupKind::Mask { mode, inverted, color, .. } = g.kind
     {
-        let mr = Rect::from_min_size(pos2(cw.switches + 4.0, cy - 9.0), vec2(80.0, 18.0));
+        // Local: the mask's colour, as its outline is drawn in the viewer (After Effects); a click
+        // opens the colour picker, and the outline follows.
+        let sr = Rect::from_min_size(pos2(cw.switches + 4.0, cy - 6.0), vec2(12.0, 12.0));
+        let rgb = color.map(|v| f32::from(v) / 255.0);
+        let pick = egui::Id::unique(("mask-color-pop", uid));
+        if widgets::swatch(ui, sr, [rgb[0], rgb[1], rgb[2], 1.0], egui::Id::unique(("mask-color", uid)), &t).clicked() {
+            widgets::open_popup(ui, pick);
+        }
+        app.auto.add(&format!("timeline.mask.{uid}.color"), sr, "Mask Color");
+        let mut picked = rgb;
+        if widgets::color_popup(ui, pick, sr.left_bottom(), &mut picked) {
+            actions.push((
+                "layer.setMask".into(),
+                json!({"layer": layer.id.0, "mask": uid, "color": picked, "merge": format!("mask-color-{}-{uid}", layer.id.0)}),
+            ));
+        }
+        let mr = Rect::from_min_size(pos2(sr.max.x + 6.0, cy - 9.0), vec2(80.0, 18.0));
         let pop = egui::Id::unique(("maskmode", uid));
         if widgets::dropdown(ui, mr, mode.label(), &t, egui::Id::unique(("mm", uid))).clicked() {
             widgets::open_popup(ui, pop);
