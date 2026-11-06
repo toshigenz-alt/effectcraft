@@ -897,6 +897,30 @@ impl<'a> Renderer<'a> {
         Some(buf)
     }
 
+    /// Local: layer-space bounds `[x0, y0, x1, y1]` of what a layer shows with its masks applied
+    /// (every mode, inverted, feather, opacity) and **no** effects, at the context time and the
+    /// renderer's scale: the pixels whose alpha is above `min_alpha`. Only the layer's own area
+    /// counts (masks past its edge add nothing). `None`: nothing visible.
+    pub fn masked_content_bounds(&self, ctx: &EvalCtx, layer: &Layer, min_alpha: f32) -> Option<[f64; 4]> {
+        let buf = self.masked_source(ctx, layer)?;
+        let (w, h) = (buf.img.width as usize, buf.img.height as usize);
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        for (i, px) in buf.img.data.iter().enumerate().take(w.saturating_mul(h)) {
+            if px[3] > min_alpha {
+                let (x, y) = (i % w.max(1), i / w.max(1));
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+        if x0 == usize::MAX || buf.scale <= 0.0 {
+            return None;
+        }
+        let to_layer = |px: usize, i: usize| (px as f64 - buf.offset[i]) / buf.scale;
+        Some([to_layer(x0, 0), to_layer(y0, 1), to_layer(x1, 0), to_layer(y1, 1)])
+    }
+
     /// Fully processed layer buffer (source → masks → effects → layer styles, flattened).
     /// Served from the layer cache when the layer's content key matches.
     pub fn layer_buf(&self, ctx: &EvalCtx, layer: &Layer) -> Option<Arc<Buf>> {

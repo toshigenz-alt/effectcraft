@@ -246,10 +246,29 @@ fn center_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.time();
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
     let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, t);
+    // Local: a layer with masks centres on what it shows at this frame — rendered with its masks
+    // and without effects, at 1/4 resolution, pixels over 10 % opacity; nothing visible leaves
+    // it alone. Other layers: their content bounds, as before.
+    let mut masked_renderer = None;
     let mut centers = vec![];
     for lid in &ids {
         let Some(l) = comp.layer(*lid) else { continue };
-        if let Some([x0, y0, x1, y1]) = effectcraft_render::content_bounds(&ctx, l) {
+        let bounds = if l.masks().is_some_and(|m| m.groups().next().is_some()) {
+            let r = masked_renderer.get_or_insert_with(|| {
+                let mut r = effectcraft_render::Renderer::new(
+                    &s.project,
+                    s.footage.as_ref(),
+                    effectcraft_render::RenderOpts { scale: 0.25, motion_blur: false, ..Default::default() },
+                );
+                r.expr = s.expr.as_deref();
+                r
+            });
+            let ctx = effectcraft_render::EvalCtx { expr: s.expr.as_deref(), ..ctx };
+            r.masked_content_bounds(&ctx, l, 0.1)
+        } else {
+            effectcraft_render::content_bounds(&ctx, l)
+        };
+        if let Some([x0, y0, x1, y1]) = bounds {
             centers.push((*lid, [(x0 + x1) / 2.0, (y0 + y1) / 2.0]));
         }
     }

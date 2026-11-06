@@ -2065,3 +2065,59 @@ fn precompose_unlinks_layers_left_behind_and_numbers_default_names() {
     names.sort();
     assert_eq!(names, ["Pre-comp 1", "Pre-comp 2"]);
 }
+
+/// Local: Center Anchor Point in Layer Content (Ctrl+Alt+Home) on a layer with masks centres on
+/// what the layer shows at this frame — masks applied (modes, inverted), effects ignored, only
+/// inside the layer, pixels over 10 % opacity (rendered at 1/4 size, so within a few pixels).
+/// Nothing visible: nothing moves. The layer stays in place.
+#[test]
+fn center_anchor_on_a_masked_layer_centres_on_what_shows() {
+    let mut s = comp();
+    let anchor = |s: &Session, l: u64| layer(s, l).props.prop("transform/anchor").unwrap().value.as_vec2();
+    let pos = |s: &Session, l: u64| layer(s, l).props.prop("transform/position").unwrap().value.as_vec3();
+    let plate = |s: &mut Session, masks: &[([f64; 4], &str)]| {
+        let l = s.execute("layer.newSolid", json!({"color": "#808080", "width": 640, "height": 360})).unwrap()["layer"].as_u64().unwrap();
+        for (r, mode) in masks {
+            s.execute("layer.addMask", json!({"layer": l, "rect": r, "mode": mode})).unwrap();
+        }
+        l
+    };
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() <= 4.0 && (a[1] - b[1]).abs() <= 4.0;
+    let centred = |s: &mut Session, l: u64| {
+        let (a0, p0) = (anchor(s, l), pos(s, l));
+        s.execute("layer.centerAnchor", json!({"layers": [l]})).unwrap();
+        let (a1, p1) = (anchor(s, l), pos(s, l));
+        // Scale 100 %, no rotation: Position moves with the anchor, so the layer stays put.
+        assert!((p1[0] - p0[0] - (a1[0] - a0[0])).abs() < 1e-6 && (p1[1] - p0[1] - (a1[1] - a0[1])).abs() < 1e-6, "{p0:?} → {p1:?}");
+        a1
+    };
+    // One Add mask: its box.
+    let l = plate(&mut s, &[([100.0, 40.0, 200.0, 100.0], "add")]);
+    let a = centred(&mut s, l);
+    assert!(near(a, [200.0, 90.0]), "{a:?}");
+    // Add minus Subtract: the part that shows (the union of the masks would be [200, 100]).
+    let l = plate(&mut s, &[([0.0, 0.0, 400.0, 200.0], "add"), ([200.0, 0.0, 200.0, 200.0], "subtract")]);
+    let a = centred(&mut s, l);
+    assert!(near(a, [100.0, 100.0]), "{a:?}");
+    // A mask past the layer's right edge counts only inside the layer.
+    let l = plate(&mut s, &[([500.0, 0.0, 300.0, 100.0], "add")]);
+    let a = centred(&mut s, l);
+    assert!(near(a, [570.0, 50.0]), "{a:?}");
+    // Effects that grow the layer don't count.
+    let l = plate(&mut s, &[([100.0, 40.0, 200.0, 100.0], "add")]);
+    s.execute("effect.apply", json!({"layer": l, "effect": "Gaussian Blur"})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "effects/#1/blurriness", "value": 80})).unwrap();
+    let a = centred(&mut s, l);
+    assert!(near(a, [200.0, 90.0]), "{a:?}");
+    // Nothing visible (an inverted mask over the whole layer): anchor and position stay.
+    let l = plate(&mut s, &[([0.0, 0.0, 640.0, 360.0], "add")]);
+    s.execute("layer.setMask", json!({"layer": l, "mask": 1, "inverted": true})).unwrap();
+    s.execute("prop.set", json!({"layer": l, "path": "transform/anchor", "value": [10, 20]})).unwrap();
+    let p0 = pos(&s, l);
+    s.execute("layer.centerAnchor", json!({"layers": [l]})).unwrap();
+    assert_eq!((anchor(&s, l), pos(&s, l)), ([10.0, 20.0], p0));
+    // Without masks: the layer's content, as before.
+    let l = plate(&mut s, &[]);
+    s.execute("prop.set", json!({"layer": l, "path": "transform/anchor", "value": [0, 0]})).unwrap();
+    assert_eq!(centred(&mut s, l), [320.0, 180.0]);
+}
