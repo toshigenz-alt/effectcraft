@@ -198,13 +198,14 @@ fn fxd_point(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
         }
-        // Cryptomatte (aux = (ID colours, selection coverage)). u[0] = (op, display, matte only).
+        // Cryptomatte (aux = (ID colours, selection coverage); for Colors the RGB is already the
+        // display's, striped selection included, fx_depth.rs). u[0] = (op, display, matte only).
         case 7u: {
             let m = q.w;
             if (P.u[0].z != 0u) {
                 o = vec4<f32>(m);
             } else if (P.u[0].y == 0u) {
-                o = vec4<f32>(q.xyz * (1.0 - 0.5 * m) + 0.5 * m, 1.0);
+                o = vec4<f32>(q.xyz, 1.0);
             } else if (P.u[0].y == 1u) {
                 o = px * m;
             } else {

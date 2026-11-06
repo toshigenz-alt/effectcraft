@@ -282,7 +282,12 @@ fn cryptomatte(e: &mut Enc, ctx: &EffectCtx, b: GBuf, a: &AuxChannels) -> Option
     // matte alone.
     // `tests::fx_depth::cryptomatte_every_display_matches_the_cpu` guards this against the shader.
     let what = effectcraft_effects::CryptoAux::for_display(pr.e("display"), pr.b("matteOnly"));
-    let img = effectcraft_effects::crypto_aux_image_with(a, &layer, &sel, what);
+    let mut img = effectcraft_effects::crypto_aux_image_with(a, &layer, &sel, what);
+    // Local: the Colors display's striped selection is made per aux pixel here, by the CPU
+    // effect's own function, so the shader shows the RGB as it is.
+    if what == effectcraft_effects::CryptoAux::ColorsAndMatte {
+        effectcraft_effects::crypto_colors_display_image(&mut img);
+    }
     let tex = e.g.upload_image(&img)?;
     let plane = lookup(e, &b, a, &tex, [0.5, 0.5], [0.0; 4]);
     let mut p = op(7);

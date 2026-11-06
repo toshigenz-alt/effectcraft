@@ -264,13 +264,15 @@ fn cryptomatte_cpu_path_is_bit_exact_inside_and_outside_the_aux_area() {
             &[("selection", Value::Str(names.into())), ("display", Value::Enum(display)), ("matteOnly", Value::Bool(matte_only))],
             &host,
         );
-        let expect = |c: [f32; 3], m: f32| -> [f32; 4] {
+        // Local: Colors shows the selection in stripes 4 aux pixels wide (the 6×2 aux's minimum):
+        // lifted where (x + y) / 4 is even, darkened where it is odd.
+        let expect = |c: [f32; 3], m: f32, lit: bool| -> [f32; 4] {
             if matte_only {
                 return [m; 4];
             }
             match display {
                 0 => {
-                    let c = c.map(|v| v * (1.0 - 0.5 * m) + 0.5 * m);
+                    let c = c.map(|v| v * (1.0 - 0.5 * m) + if lit { 0.5 * m } else { 0.0 });
                     [c[0], c[1], c[2], 1.0]
                 }
                 1 => src.map(|v| v * m),
@@ -279,16 +281,47 @@ fn cryptomatte_cpu_path_is_bit_exact_inside_and_outside_the_aux_area() {
         };
         for (x, y) in [(0u32, 0u32), (1, 0), (5, 0), (0, 1), (3, 1), (5, 1)] {
             let (c, m) = reduce_by_name(&a, "CryptoObject", &edge_selection(), (y * 6 + x) as usize);
-            assert_eq!(out.get(x as i64, y as i64).map(f32::to_bits), expect(c, m).map(f32::to_bits), "display {display} matteOnly {matte_only} at ({x}, {y})");
+            let lit = (x + y) / 4 % 2 == 0;
+            assert_eq!(
+                out.get(x as i64, y as i64).map(f32::to_bits),
+                expect(c, m, lit).map(f32::to_bits),
+                "display {display} matteOnly {matte_only} at ({x}, {y})"
+            );
         }
         for (x, y) in [(6u32, 0u32), (19, 0), (0, 2), (12, 9)] {
             assert_eq!(
                 out.get(x as i64, y as i64).map(f32::to_bits),
-                expect([0.0; 3], 0.0).map(f32::to_bits),
+                expect([0.0; 3], 0.0, true).map(f32::to_bits),
                 "display {display} matteOnly {matte_only} outside the aux at ({x}, {y})"
             );
         }
     }
+}
+
+/// Local: the Colors display shows the selected IDs in diagonal stripes (a zebra) so they stand
+/// out among the ID colours: lifted half-way to white and darkened by half in turn, every
+/// [`crypto_stripe_width`] aux pixels along x + y; unselected IDs keep their colour.
+#[test]
+fn cryptomatte_colors_shows_the_selection_in_stripes() {
+    assert_eq!((crypto_stripe_width(20, 10), crypto_stripe_width(1920, 1080), crypto_stripe_width(1080, 3840)), (4, 12, 24));
+    let h = scene();
+    let out = run("ec.3d.cryptomatte", &[("selection", Value::Str("left".into())), ("display", Value::Enum(0))], &h);
+    let (cl, cr) = (id_color(crypto_float(crypto_hash("left"))), id_color(crypto_float(crypto_hash("right"))));
+    let rgb = |x: i64, y: i64| out.get(x, y).map(f32::to_bits)[..3].to_vec();
+    let bits = |c: [f32; 3]| c.map(f32::to_bits).to_vec();
+    let (lifted, darkened) = (cl.map(|v| v * 0.5 + 0.5), cl.map(|v| v * 0.5));
+    // "left" (x < 10): stripes along x + y.
+    for (x, y) in [(0, 0), (3, 0), (2, 1), (8, 0), (5, 3), (9, 9)] {
+        assert_eq!(rgb(x, y), bits(lifted), "lifted at ({x}, {y})");
+    }
+    for (x, y) in [(4, 0), (7, 0), (0, 4), (6, 1), (9, 3)] {
+        assert_eq!(rgb(x, y), bits(darkened), "darkened at ({x}, {y})");
+    }
+    // "right" is not selected: its ID colour on both stripes.
+    for (x, y) in [(12, 5), (13, 7), (10, 9)] {
+        assert_eq!(rgb(x, y), bits(cr), "unselected at ({x}, {y})");
+    }
+    assert_ne!(lifted, darkened);
 }
 
 #[test]

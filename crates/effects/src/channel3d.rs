@@ -491,6 +491,36 @@ pub fn crypto_aux_image_with(a: &AuxChannels, layer: &str, sel: &[u32], what: Cr
     img
 }
 
+/// Local: the width of [`crypto_colors_display`]'s stripes, in aux pixels: 1/160 of the aux
+/// image's longer side, at least 4 (12 at 1920×1080), so they stay visible zoomed out.
+pub fn crypto_stripe_width(aw: u32, ah: u32) -> usize {
+    (aw.max(ah) as usize / 160).max(4)
+}
+
+/// Local: the Colors display at aux pixel `i` of an `aw`×`ah` aux image: the ID colours `c`,
+/// and the selection (coverage `m`) in diagonal stripes, so selected IDs stand out among the
+/// random ID colours (a zebra): one stripe lifted half-way to white (the display's highlight
+/// before), the next darkened by half; both keep the ID colour. An unselected pixel (`m` = 0)
+/// keeps its ID colour. The CPU effect and the GPU's aux image
+/// ([`crypto_colors_display_image`]) both use this, so the two match bit for bit.
+#[inline]
+pub fn crypto_colors_display(c: [f32; 3], m: f32, i: usize, aw: u32, ah: u32) -> [f32; 3] {
+    let w = (aw as usize).max(1);
+    let lit = ((i % w + i / w) / crypto_stripe_width(aw, ah)) % 2 == 0;
+    let lift = if lit { 0.5 * m } else { 0.0 };
+    c.map(|v| v * (1.0 - 0.5 * m) + lift)
+}
+
+/// Local: [`crypto_aux_image`]'s RGB (ID colours) turned into the Colors display's
+/// ([`crypto_colors_display`]); the GPU effect then shows that RGB as it is.
+pub fn crypto_colors_display_image(img: &mut Image) {
+    let (w, h) = (img.width, img.height);
+    img.data.par_iter_mut().enumerate().for_each(|(i, px)| {
+        let c = crypto_colors_display([px[0], px[1], px[2]], px[3], i, w, h);
+        *px = [c[0], c[1], c[2], px[3]];
+    });
+}
+
 fn cryptomatte(ctx: &EffectCtx, mut b: Buf) -> Buf {
     let Some(a) = aux(ctx) else { return b };
     let layers = a.crypto_layers();
@@ -512,10 +542,10 @@ fn cryptomatte(ctx: &EffectCtx, mut b: Buf) -> Buf {
             return;
         }
         *px = match display {
-            // Colors: coverage-weighted ID colours (the spec's preview), selection brighter.
+            // Colors: coverage-weighted ID colours (the spec's preview), the selection in
+            // stripes (local; upstream: brighter). Outside the aux: black, as before.
             0 => {
-                let c = k.map_or([0.0; 3], |k| crypto_colors(&planes, k, memo));
-                let c = c.map(|v| v * (1.0 - 0.5 * m) + 0.5 * m);
+                let c = k.map_or([0.0; 3], |k| crypto_colors_display(crypto_colors(&planes, k, memo), m, k, a.width, a.height));
                 [c[0], c[1], c[2], 1.0]
             }
             // Matte: the layer keyed by the selection (each pixel only reads itself, so no copy).
