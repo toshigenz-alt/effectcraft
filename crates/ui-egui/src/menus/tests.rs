@@ -63,9 +63,13 @@ fn full_screen_default_is_platform_specific() {
 #[test]
 fn ui_and_menu_shortcuts_do_not_collide() {
     let app = EffectcraftApp::new(effectcraft_engine::Session::default());
-    let mut seen: std::collections::BTreeMap<(String, String), (String, String)> = Default::default();
+    let mut seen: std::collections::BTreeMap<(String, String, String), (String, String)> = Default::default();
+    let table = app.session.shortcuts();
     for (m, k, id, params) in bindings(&app.session) {
-        let key = (format!("{m:?}"), format!("{k:?}"));
+        // Local: unique per scope; a panel's binding may share an application-wide one's keys
+        // (the focused panel's wins: Remember Interpretation's Cmd+Alt+C in the Project panel).
+        let scope = table.find(&effectcraft_engine::shortcuts::binding_key(&id, &params)).map_or_else(String::new, |b| b.scope.clone());
+        let key = (format!("{m:?}"), format!("{k:?}"), scope);
         let target = (id.clone(), params.to_string());
         if let Some(prev) = seen.get(&key) {
             assert_eq!(prev, &target, "{key:?} bound to {prev:?} and {target:?}");
@@ -663,4 +667,58 @@ fn dependencies_commands_report_the_removed_count_in_a_box() {
     invoke(&mut app, &ctx, "file.removeUnusedFootage", json!({})).unwrap();
     assert_eq!(app.dialog_state.info.1, "Remove Unused Footage removed 0 items from the project.");
     assert_eq!(super::invoke::removed_count_text("file.consolidateFootage", 1), "Consolidate All Footage removed 1 item (duplicate footage) from the project.");
+}
+
+/// Local: in the Project panel Cmd+Alt+C (Ctrl+Alt+C) is Remember Interpretation and Cmd+Alt+V
+/// Apply Interpretation, onto every selected footage item (comps skipped) in one undo step.
+/// Elsewhere Cmd+Alt+C stays Copy with Property Links.
+#[test]
+fn ctrl_alt_c_and_v_copy_and_paste_an_interpretation_in_the_project_panel() {
+    use effectcraft_engine::project::{AlphaMode, Footage, FootageKind, ItemKind};
+    let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let clip = |path: &str, par: f64| {
+        ItemKind::Footage(Footage {
+            path: path.into(),
+            kind: FootageKind::Video,
+            width: 4,
+            height: 4,
+            has_video: true,
+            pixel_aspect: par,
+            ..Default::default()
+        })
+    };
+    let comp = app.session.execute("comp.new", json!({"name": "A", "width": 64, "height": 36, "frameRate": 30, "duration": 1})).unwrap();
+    let project = std::sync::Arc::make_mut(&mut app.session.project);
+    let src = project.add_item("src.mp4", Default::default(), None, clip("/m/src.mp4", 2.0));
+    let b = project.add_item("b.mp4", Default::default(), None, clip("/m/b.mp4", 1.0));
+    let c = project.add_item("c.mp4", Default::default(), None, clip("/m/c.mp4", 1.0));
+    if let Some(ItemKind::Footage(f)) = project.item_mut(src).map(|i| &mut i.kind) {
+        f.alpha = AlphaMode::Premultiplied;
+    }
+    let press = |app: &mut EffectcraftApp, key: egui::Key| {
+        let mods = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+        let raw =
+            egui::RawInput { events: vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods }], ..Default::default() };
+        ctx.run_ui(raw, |ui| super::shortcuts::handle_shortcuts(app, ui.ctx())).textures_delta.clear();
+    };
+    let looks = |app: &EffectcraftApp, id| match app.session.project.item(id).map(|i| &i.kind) {
+        Some(ItemKind::Footage(f)) => (f.alpha, f.pixel_aspect),
+        _ => panic!("not footage"),
+    };
+    app.ui.focused = PanelKind::Project;
+    app.session.execute("project.select", json!({"items": [src.0]})).unwrap();
+    press(&mut app, egui::Key::C);
+    assert!(app.session.state.interpretation.is_some(), "Cmd+Alt+C remembered the interpretation");
+    app.session.execute("project.select", json!({"items": [b.0, c.0, comp["comp"]]})).unwrap();
+    let undo_before = app.session.history.undo.len();
+    press(&mut app, egui::Key::V);
+    assert_eq!(looks(&app, b), (AlphaMode::Premultiplied, 2.0));
+    assert_eq!(looks(&app, c), (AlphaMode::Premultiplied, 2.0));
+    assert_eq!(app.session.history.undo.len(), undo_before + 1, "one undo step");
+    // Outside the Project panel the chord is still Copy with Property Links.
+    let table = app.session.shortcuts();
+    let scope = |id: &str| table.find(&effectcraft_engine::shortcuts::binding_key(id, &json!({}))).map(|b| b.scope.clone());
+    assert_eq!(scope("file.rememberInterpretation").as_deref(), Some("Project"));
+    assert!(bindings(&app.session).iter().any(|b| b.2 == "edit.copyWithPropertyLinks" && (b.0, b.1) == parse_shortcut("Cmd+Alt+C").unwrap()));
 }

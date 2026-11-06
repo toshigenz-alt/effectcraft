@@ -1334,7 +1334,9 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.rememberInterpretation",
             "Remember Interpretation",
             ["File", "Interpret Footage"],
-            None,
+            // Local: as in After Effects. Project-panel scope, so Copy with Property Links keeps
+            // Cmd+Alt+C everywhere else.
+            Some("Cmd+Alt+C"),
             "{item?}",
             has_footage_selection,
             remember_interpretation

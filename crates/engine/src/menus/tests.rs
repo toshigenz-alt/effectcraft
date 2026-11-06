@@ -87,10 +87,15 @@ fn shortcuts_are_unambiguous() {
         if sc == "Num*" {
             return;
         }
-        if let Some(prev) = seen.get(sc) {
-            assert_eq!(prev, &(id.to_string(), params.clone()), "shortcut {sc} is bound twice");
+        // Local: unique per scope. A panel-scoped default may share an application-wide one's
+        // keys: the focused panel's binding wins (`settings::shortcuts::pick`), as Remember
+        // Interpretation's Cmd+Alt+C does over Copy with Property Links in the Project panel.
+        let key = crate::settings::shortcuts::binding_key(id, &serde_json::from_str(&params).unwrap_or(Value::Null));
+        let sc_scope = format!("{sc} @{}", crate::settings::shortcuts::scope_of(&key));
+        if let Some(prev) = seen.get(&sc_scope) {
+            assert_eq!(prev, &(id.to_string(), params.clone()), "shortcut {sc_scope} is bound twice");
         } else {
-            seen.insert(sc.to_string(), (id.to_string(), params));
+            seen.insert(sc_scope, (id.to_string(), params));
         }
     };
     for (_, e) in platform_entries(true) {
