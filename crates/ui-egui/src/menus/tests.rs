@@ -328,6 +328,13 @@ fn save_as_dialogs_start_from_the_open_project() {
     let xml = dir.join("Intro.ecprojx").to_string_lossy().to_string();
     // Save a Copy names another file: it would refuse to write over the open project.
     assert_eq!(*asked.borrow(), ["project Intro.ecproj".to_string(), "project Intro copy.ecproj".into(), format!("file {xml} [ecprojx]")]);
+    // Local: Collect Files starts from the project's file name too: a folder, no file-type
+    // filter even when the name has a dot.
+    app.session.path = Some(dir.join("Intro v1.2.ecproj").to_string_lossy().to_string());
+    asked.borrow_mut().clear();
+    invoke(&mut app, &ctx, "file.collectFiles", json!({})).unwrap();
+    let folder = dir.join("Intro v1.2").to_string_lossy().to_string();
+    assert_eq!(*asked.borrow(), [format!("file {folder} []")]);
     // An open XML project's XML copy is another file too.
     app.session.path = Some(dir.join("Intro.ecprojx").to_string_lossy().to_string());
     asked.borrow_mut().clear();

@@ -547,6 +547,8 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         Import,
         OpenProject,
         Save(std::borrow::Cow<'static, str>),
+        /// A new folder's name (local: no file-type filter, even when the name has a dot).
+        SaveFolder(std::borrow::Cow<'static, str>),
         Open(&'static [&'static str]),
         /// A movie, or a file with one of these extensions.
         OpenFootage(&'static [&'static str]),
@@ -558,6 +560,11 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         let Some(path) = app.session.path.as_deref().map(std::path::Path::new) else { return format!("Untitled Project{suffix}.{ext}").into() };
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled Project".into());
         path.with_file_name(format!("{stem}{suffix}.{ext}")).to_string_lossy().into_owned().into()
+    };
+    let collect_as = || -> std::borrow::Cow<'static, str> {
+        let Some(path) = app.session.path.as_deref().map(std::path::Path::new) else { return "Collected Files".into() };
+        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { return "Collected Files".into() };
+        path.with_file_name(stem).to_string_lossy().into_owned().into()
     };
     let (key, ask) = match id {
         "file.import" | "file.importMultiple" => ("paths", Ask::Import),
@@ -585,7 +592,9 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         "effect.plugins.load" if params.get("folder").is_none() => ("path", Ask::Open(&["wasm", "wat"])),
         "file.replaceFootage" => ("path", Ask::Import),
         "file.relinkFootage" => ("folder", Ask::Folder),
-        "file.collectFiles" => ("folder", Ask::Save("Collected Files".into())),
+        // Local: Collect Files starts from the open project's file name, in its folder (an
+        // untitled project keeps Collected Files).
+        "file.collectFiles" => ("folder", Ask::SaveFolder(collect_as())),
         // An open XML project gets ` copy` too: the copy never writes over the open file.
         "file.saveCopyAsXml" => {
             let xml = app.session.path.as_deref().and_then(|p| std::path::Path::new(p).extension()).is_some_and(|e| e.eq_ignore_ascii_case("ecprojx"));
@@ -624,6 +633,7 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
             Ask::Open(exts) => crate::FileDialog::Open { exts: exts.iter().map(|e| e.to_string()).collect(), many: false },
             Ask::OpenFootage(more) => crate::FileDialog::Open { exts: footage(more).iter().map(|e| e.to_string()).collect(), many: false },
             Ask::Save(default) => crate::FileDialog::save(&default),
+            Ask::SaveFolder(default) => crate::FileDialog::Save { default: default.into_owned(), ext: String::new(), project: false },
         };
         let tx = app.dialog_answers.0.clone();
         let answer = crate::DialogAnswer { command: id.to_string(), key, params: params.clone(), paths: Vec::new() };
@@ -659,6 +669,16 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         }
         Ask::Save(default) => {
             let Some(picked) = app.hooks.save_dialog(&default) else { return Some(Err("no file dialog available (pass `path`)".into())) };
+            picked.map(|s| json!(s))
+        }
+        Ask::SaveFolder(default) => {
+            let picked = match &app.hooks.pick_save_file {
+                Some(pick) => pick(&default, ""),
+                None => match app.hooks.save_dialog(&default) {
+                    Some(picked) => picked,
+                    None => return Some(Err("no file dialog available (pass `folder`)".into())),
+                },
+            };
             picked.map(|s| json!(s))
         }
     };
