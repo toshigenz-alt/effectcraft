@@ -77,9 +77,36 @@ pub struct Form {
     pub command: String,
     pub base: Value,
     pub fields: Vec<Field>,
+    /// Local: the parameters the form opened with. When set (Interpret Footage on several
+    /// items), OK sends `base` and only the fields the user changed, so the items keep their
+    /// own values for the rest ([`Form::changed_params`]).
+    pub opened: Option<Value>,
 }
 
+/// Local: fields that only mean something together; when one changed, all of them are sent.
+const COUPLED_FIELDS: &[&[&str]] = &[&["overrideStart", "startTimecode"], &["convertedBlack", "convertedWhite"]];
+
 impl Form {
+    /// The parameters OK sends: [`Form::params`], less the fields that still hold the value the
+    /// form opened with when [`Form::opened`] is set (`base` is always sent).
+    pub fn changed_params(&self) -> Value {
+        let mut p = self.params();
+        let (Some(opened), Some(m)) = (&self.opened, p.as_object_mut()) else { return p };
+        let base = self.base.as_object();
+        let changed = |m: &Map<String, Value>, k: &str| m.get(k) != opened.get(k);
+        let keep: Vec<String> = m
+            .keys()
+            .filter(|k| {
+                base.is_some_and(|b| b.contains_key(k.as_str()))
+                    || changed(m, k)
+                    || COUPLED_FIELDS.iter().any(|g| g.contains(&k.as_str()) && g.iter().any(|o| changed(m, o)))
+            })
+            .cloned()
+            .collect();
+        m.retain(|k, _| keep.contains(k));
+        p
+    }
+
     /// The command parameters: `base` plus every field.
     pub fn params(&self) -> Value {
         let mut m: Map<String, Value> = self.base.as_object().cloned().unwrap_or_default();
@@ -113,7 +140,7 @@ impl Form {
 
 /// Open a form dialog.
 pub fn form(app: &mut EffectcraftApp, title: &str, command: &str, base: Value, fields: Vec<Field>) {
-    app.dialog_state.form = Form { title: title.into(), command: command.into(), base, fields };
+    app.dialog_state.form = Form { title: title.into(), command: command.into(), base, fields, opened: None };
     app.dialog = Some(Dialog::Form);
 }
 
@@ -837,7 +864,23 @@ pub fn open_form(app: &mut EffectcraftApp, id: &str, p: &Value) -> bool {
         _ => return false,
     };
     form(app, &title, id, base, fields);
+    // Local: Interpret Footage on several items changes only what the user changes in the dialog
+    // (it shows the first item's values); one item gets the whole dialog, as before.
+    if matches!(id, "file.interpretFootage" | "file.interpretProxy") && interpreted_items(&app.session, id == "file.interpretProxy") > 1 {
+        app.dialog_state.form.opened = Some(app.dialog_state.form.params());
+    }
     true
+}
+
+/// Local: how many selected Project items Interpret Footage (or its Proxy) applies to.
+fn interpreted_items(s: &effectcraft_engine::Session, proxy: bool) -> usize {
+    use effectcraft_engine::project::ItemKind;
+    s.state
+        .project_selection
+        .iter()
+        .filter_map(|i| s.project.item(*i))
+        .filter(|it| if proxy { it.proxy.is_some() } else { matches!(it.kind, ItemKind::Footage(_)) })
+        .count()
 }
 
 /// The label and control rows of a form: the part of [`show_form`] that scrolls.
@@ -989,7 +1032,7 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     app.dialog_state.form = f.clone();
     if ok || enter {
         app.dialog = None;
-        let params = f.params();
+        let params = f.changed_params();
         if let Err(e) = app.session.execute(&f.command, params) {
             app.ui.status = e.to_string();
         }
@@ -1062,6 +1105,7 @@ mod tests {
                 Field::num("value[1]", "Y", 20.0),
                 Field::choice("mode", "M", &[("A", json!("a")), ("B", json!("b"))], 1),
             ],
+            opened: None,
         };
         assert_eq!(f.params(), json!({"prop": "position", "value": [10.0, 20.0], "mode": "b"}));
     }
@@ -1078,6 +1122,7 @@ mod tests {
             command: "layer.setTransform".into(),
             base: json!({"prop": "position"}),
             fields: vec![Field::num("value[0]", "X", 960.0), Field::num("value[1]", "Y", 540.0)],
+            opened: None,
         };
         app.dialog = Some(Dialog::Form);
         let frame = |app: &mut EffectcraftApp, events: Vec<egui::Event>| {
@@ -1109,6 +1154,7 @@ mod tests {
             command: "file.interpretFootage".into(),
             base: json!({}),
             fields: vec![Field::text("matteColor", "Matte color (premultiplied)", "#000000"), Field::num("frameRate", "Assume this frame rate", 30.0)],
+            opened: None,
         };
         app.dialog = Some(Dialog::Form);
         let frame = |app: &mut EffectcraftApp, events: Vec<egui::Event>| {
@@ -1242,5 +1288,74 @@ mod tests {
         assert!(open_form(&mut app, "file.interpretFootage", &json!({})));
         let white = app.dialog_state.form.fields.iter().find(|f| f.key == "convertedWhite").map(|f| f.kind.clone());
         assert!(matches!(white, Some(FieldKind::Number { value, .. }) if (value - 255.0).abs() < 1e-6), "{white:?}");
+    }
+
+    /// Local: Interpret Footage on several items with different settings changes only the
+    /// fields the user changed (here the frame rate); alpha, pixel aspect and the rest stay each
+    /// item's own. One item still gets the whole dialog.
+    #[test]
+    fn interpret_footage_on_several_items_sends_only_the_changed_fields() {
+        use effectcraft_engine::project::{AlphaMode, Footage, FootageKind, ItemKind};
+        let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens, crate::i18n::language(&app));
+        let clip = |path: &str, alpha: AlphaMode, par: f64| {
+            ItemKind::Footage(Footage {
+                path: path.into(),
+                kind: FootageKind::Video,
+                width: 4,
+                height: 4,
+                has_video: true,
+                alpha,
+                pixel_aspect: par,
+                ..Default::default()
+            })
+        };
+        let project = std::sync::Arc::make_mut(&mut app.session.project);
+        let a = project.add_item("a.mp4", Default::default(), None, clip("/m/a.mp4", AlphaMode::Straight, 1.0));
+        let b = project.add_item("b.mp4", Default::default(), None, clip("/m/b.mp4", AlphaMode::Premultiplied, 2.0));
+        let footage = |app: &EffectcraftApp, id| match app.session.project.item(id).map(|i| &i.kind) {
+            Some(ItemKind::Footage(f)) => (f.frame_rate.as_f64(), f.alpha, f.pixel_aspect),
+            _ => panic!("not footage"),
+        };
+        let rate_before = footage(&app, a).0;
+        app.session.state.project_selection = vec![a, b];
+        assert!(open_form(&mut app, "file.interpretFootage", &json!({})));
+        let draw = |app: &mut EffectcraftApp, events: Vec<egui::Event>| {
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                app.auto.begin_frame();
+                crate::panels::dialogs::show(app, ui.ctx());
+            })
+            .textures_delta
+            .clear();
+        };
+        // The frame rate takes the keyboard when the dialog opens: type 12, then Enter is OK.
+        draw(&mut app, vec![]);
+        draw(&mut app, vec![]);
+        draw(&mut app, vec![egui::Event::Text("12".into())]);
+        let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+        draw(&mut app, vec![enter(true), enter(false)]);
+        if app.dialog.is_some() {
+            draw(&mut app, vec![enter(true), enter(false)]);
+        }
+        assert!(app.dialog.is_none(), "OK closed the dialog");
+        assert_ne!(rate_before, 12.0);
+        assert_eq!(footage(&app, a), (12.0, AlphaMode::Straight, 1.0));
+        assert_eq!(footage(&app, b), (12.0, AlphaMode::Premultiplied, 2.0), "b keeps its own alpha and pixel aspect");
+        // Start Timecode's two fields go together.
+        let mut f = app.dialog_state.form.clone();
+        f.opened = Some(json!({"overrideStart": false, "startTimecode": "0:00:00:00", "loop": 1.0}));
+        f.fields = vec![
+            Field::choice("overrideStart", "Start", &[("Off", json!(false)), ("On", json!(true))], 1),
+            Field::text("startTimecode", "At", "0:00:00:00"),
+            Field::num("loop", "Loop", 1.0),
+        ];
+        f.base = json!({"pointUnits": "10bit"});
+        assert_eq!(f.changed_params(), json!({"overrideStart": true, "startTimecode": "0:00:00:00", "pointUnits": "10bit"}));
+        // One item: the whole dialog, as before.
+        app.session.state.project_selection = vec![a];
+        assert!(open_form(&mut app, "file.interpretFootage", &json!({})));
+        assert!(app.dialog_state.form.opened.is_none());
+        assert_eq!(app.dialog_state.form.changed_params(), app.dialog_state.form.params());
     }
 }
