@@ -644,3 +644,23 @@ fn menu_items_cover_the_tree() {
     assert_eq!(menus().last(), Some(&"Help"));
     assert!(effectcraft_engine::menus::entries().len() > 500);
 }
+
+/// Local: Reduce Project, Remove Unused Footage and Consolidate All Footage report how many
+/// items they removed in a box with OK (After Effects), not only in a toast.
+#[test]
+fn dependencies_commands_report_the_removed_count_in_a_box() {
+    let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let a = app.session.execute("comp.new", json!({"name": "A", "width": 64, "height": 36, "frameRate": 30, "duration": 1})).unwrap();
+    for name in ["B", "C"] {
+        app.session.execute("comp.new", json!({"name": name, "width": 64, "height": 36, "frameRate": 30, "duration": 1})).unwrap();
+    }
+    app.session.execute("project.select", json!({"items": [a["comp"]]})).unwrap();
+    invoke(&mut app, &ctx, "file.reduceProject", json!({})).unwrap();
+    assert_eq!(app.dialog, Some(crate::Dialog::Info));
+    assert_eq!(app.dialog_state.info, ("Reduce Project".to_string(), "Reduce Project removed 2 items from the project.".to_string()));
+    app.dialog = None;
+    invoke(&mut app, &ctx, "file.removeUnusedFootage", json!({})).unwrap();
+    assert_eq!(app.dialog_state.info.1, "Remove Unused Footage removed 0 items from the project.");
+    assert_eq!(super::invoke::removed_count_text("file.consolidateFootage", 1), "Consolidate All Footage removed 1 item (duplicate footage) from the project.");
+}

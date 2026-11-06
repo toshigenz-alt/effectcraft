@@ -171,6 +171,25 @@ fn vertex_delta(app: &EffectcraftApp, layer: effectcraft_engine::project::LayerI
     })
 }
 
+/// Local: the title of the box that reports how many items `id` removed (`None`: not one of
+/// the Dependencies commands that remove items).
+fn removed_count_title(id: &str) -> Option<&'static str> {
+    match id {
+        "file.reduceProject" => Some("Reduce Project"),
+        "file.removeUnusedFootage" => Some("Remove Unused Footage"),
+        "file.consolidateFootage" => Some("Consolidate All Footage"),
+        _ => None,
+    }
+}
+
+/// Local: the message of that box for `n` removed items.
+pub(super) fn removed_count_text(id: &str, n: u64) -> String {
+    let title = removed_count_title(id).unwrap_or("The command");
+    let items = if n == 1 { "1 item".to_string() } else { format!("{n} items") };
+    let what = if id == "file.consolidateFootage" { format!("{items} (duplicate footage)") } else { items };
+    format!("{title} removed {what} from the project.")
+}
+
 pub(super) fn no_params(p: &Value) -> bool {
     p.as_object().is_none_or(|m| m.is_empty())
 }
@@ -709,6 +728,16 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 if let Ok(applied) = &r {
                     crate::panels::effect_controls::reveal_applied(app, &params);
                     crate::panels::effect_controls::choose_files_after_apply(app, applied);
+                }
+                return r;
+            }
+            // Local: Reduce Project, Remove Unused Footage and Consolidate All Footage say how many
+            // items they removed in a box with OK, as After Effects does ("Reduce Project removed
+            // N items from the project."); the toast alone went unnoticed.
+            if let Some(what) = removed_count_title(id) {
+                let r = run_engine(app, ctx, id, params.clone());
+                if let Some(n) = r.as_ref().ok().and_then(|v| v["removed"].as_u64()) {
+                    crate::panels::forms::info(app, what, &removed_count_text(id, n));
                 }
                 return r;
             }
