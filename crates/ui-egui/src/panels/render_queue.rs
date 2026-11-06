@@ -142,6 +142,40 @@ fn settings_menu(it: &RenderQueueItem, templates: &RenderTemplates) -> Vec<(Stri
     v
 }
 
+/// The entry picked from an item's Render Settings / Output Module menu. Local: in the Output
+/// Module menu (`templates`) a right-click on a template offers Set as Default: the open
+/// project's Movie Default and the one new projects start from (`app`).
+fn pick_from_menu(
+    ui: &mut egui::Ui,
+    did: egui::Id,
+    dd: Rect,
+    labels: &[String],
+    menu: &[(String, Value)],
+    templates: bool,
+    actions: &mut Vec<Action>,
+) -> Option<usize> {
+    let set_default = did.with("set-default");
+    let picked = match widgets::popup_menu_picks(ui, did, dd.left_bottom(), labels, None) {
+        Some(widgets::Picked::Primary(i)) => Some(i),
+        Some(widgets::Picked::Secondary(i)) => {
+            if let Some(name) = menu.get(i).and_then(|m| m.1.get("template")).and_then(Value::as_str).filter(|_| templates) {
+                let at = ui.input(|inp| inp.pointer.interact_pos()).unwrap_or(dd.left_bottom());
+                ui.data_mut(|d| d.insert_temp(set_default, (name.to_string(), at)));
+                widgets::open_popup(ui, set_default);
+            }
+            None
+        }
+        None => None,
+    };
+    if let Some((name, at)) = ui.data(|d| d.get_temp::<(String, egui::Pos2)>(set_default))
+        && widgets::popup_is_open(ui, set_default)
+        && widgets::popup_menu(ui, set_default, at, &[tr("Set as Default").to_string()], None) == Some(0)
+    {
+        actions.push(("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": name, "app": true})));
+    }
+    picked
+}
+
 /// Output Module menu: (label, params). `{"form": …}` entries open a form.
 fn output_menu(it: &RenderQueueItem, available: &[OutputFormat], templates: &RenderTemplates) -> Vec<(String, Value)> {
     let o = &it.output;
@@ -981,28 +1015,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 widgets::open_popup(ui, did);
             }
             let labels: Vec<String> = menu.iter().map(|(l, _)| l.clone()).collect();
-            // Local: right-click an Output Module template ▸ Set as Default: the open project's
-            // Movie Default and the one new projects start from (`app`).
-            let set_default = did.with("set-default");
-            let picked = match widgets::popup_menu_picks(ui, did, dd.left_bottom(), &labels, None) {
-                Some(widgets::Picked::Secondary(i)) => {
-                    if let Some(name) = menu[i].1.get("template").and_then(Value::as_str).filter(|_| sub == 1) {
-                        let at = ui.input(|inp| inp.pointer.interact_pos()).unwrap_or(dd.left_bottom());
-                        ui.data_mut(|d| d.insert_temp(set_default, (name.to_string(), at)));
-                        widgets::open_popup(ui, set_default);
-                    }
-                    None
-                }
-                Some(widgets::Picked::Primary(i)) => Some(i),
-                None => None,
-            };
-            if let Some((name, at)) = ui.data(|d| d.get_temp::<(String, egui::Pos2)>(set_default))
-                && widgets::popup_is_open(ui, set_default)
-            {
-                if widgets::popup_menu(ui, set_default, at, &[tr("Set as Default").to_string()], None) == Some(0) {
-                    actions.push(("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": name, "app": true})));
-                }
-            }
+            let picked = pick_from_menu(ui, did, dd, &labels, &menu, sub == 1, &mut actions);
             if let Some(i) = picked {
                 if widgets::by_keyboard(ui) {
                     dd_resp.request_focus();
