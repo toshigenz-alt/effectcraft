@@ -640,22 +640,74 @@ pub(crate) fn begin_ft_drag(f: &FtBox, press: Pos2, map: &ViewerMap) -> Option<D
     let c = map.to_comp(press);
     let lp = inv.apply(gv2(c[0], c[1]));
     let lp = [lp.x, lp.y];
-    if let Some(i) = (0..8).find(|i| f.handles[*i].distance(press) < 7.0) {
-        let opp = [2, 3, 0, 1, 6, 7, 4, 5][i];
-        let axes = match i {
-            4 | 6 => [false, true],
-            5 | 7 => [true, false],
-            _ => [true, true],
-        };
-        return Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 1, anchor: f.handle_local(opp), last: lp, inv, axes });
+    match ft_zone(f, press)? {
+        FtZone::Handle(i) => {
+            let opp = [2, 3, 0, 1, 6, 7, 4, 5][i];
+            let axes = match i {
+                4 | 6 => [false, true],
+                5 | 7 => [true, false],
+                _ => [true, true],
+            };
+            Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 1, anchor: f.handle_local(opp), last: lp, inv, axes })
+        }
+        FtZone::Inside => Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 0, anchor: f.center(), last: lp, inv, axes: [true, true] }),
+        FtZone::Rotate => Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 2, anchor: f.center(), last: lp, inv, axes: [true, true] }),
     }
-    if point_in_quad(press, &f.quad) {
-        return Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 0, anchor: f.center(), last: lp, inv, axes: [true, true] });
+}
+
+/// Local: what a press at a screen point does on the free-transform box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FtZone {
+    /// A handle: scale (0–3 corners, 4 top, 5 right, 6 bottom, 7 left).
+    Handle(usize),
+    /// Inside the box: move.
+    Inside,
+    /// Just outside the box: rotate about its centre.
+    Rotate,
+}
+
+/// Local: how far outside the free-transform box (screen points, from its nearest edge) a press
+/// still rotates. It used to be only 24 points around each corner, with no cursor to find it.
+pub(crate) const FT_ROTATE_REACH: f32 = 40.0;
+
+/// Local: the zone of the free-transform box under `pos` (`None`: away from it).
+pub(crate) fn ft_zone(f: &FtBox, pos: Pos2) -> Option<FtZone> {
+    if let Some(i) = (0..8).find(|i| f.handles[*i].distance(pos) < 7.0) {
+        return Some(FtZone::Handle(i));
     }
-    if f.quad.iter().any(|q| q.distance(press) < 24.0) {
-        return Some(Drag::Ft { layer: f.layer, path: f.uid, mode: 2, anchor: f.center(), last: lp, inv, axes: [true, true] });
+    if point_in_quad(pos, &f.quad) {
+        return Some(FtZone::Inside);
     }
-    None
+    let edge = (0..4).map(|i| distance_to_segment(pos, f.quad[i], f.quad[(i + 1) % 4])).fold(f32::MAX, f32::min);
+    (edge < FT_ROTATE_REACH).then_some(FtZone::Rotate)
+}
+
+fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_sq();
+    let t = if len2 > 1e-9 { ((p - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    p.distance(a + ab * t)
+}
+
+/// Local: a Rotation-tool drag that turns mask `uid` of `layer` — the points `selected` (two or
+/// more), else the whole mask — about the centre of their box, as the free-transform box's
+/// rotate drag does (one undo step).
+pub(crate) fn rotate_mask_drag(paths: &[PathInfo], map: &ViewerMap, layer: LayerId, uid: u64, selected: &[usize], press: Pos2) -> Option<Drag> {
+    let p = paths.iter().find(|p| p.is_mask && p.layer == layer && p.uid == uid)?;
+    let idx: Vec<usize> = if selected.len() >= 2 { selected.to_vec() } else { (0..p.sp.vertices.len()).collect() };
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for v in idx.iter().filter_map(|i| p.sp.vertices.get(*i)) {
+        lo = [lo[0].min(v[0]), lo[1].min(v[1])];
+        hi = [hi[0].max(v[0]), hi[1].max(v[1])];
+    }
+    if lo[0] > hi[0] {
+        return None;
+    }
+    let inv = p.m.inverse()?;
+    let c = map.to_comp(press);
+    let lp = inv.apply(gv2(c[0], c[1]));
+    let anchor = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+    Some(Drag::Ft { layer, path: uid, mode: 2, anchor, last: [lp.x, lp.y], inv, axes: [true, true] })
 }
 
 /// Mask Feather tool: press on a feather point's handle to drag it, or on a mask path to add a

@@ -564,7 +564,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "path.freeTransform",
             "Free Transform Points",
             ["Layer", "Mask and Shape Path"],
-            None,
+            // Local: in the Mask context (settings::shortcuts::SCOPES).
+            Some("Cmd+T"),
             "{layer?, mask?, scale?: % | [x%, y%], rotation?: deg, offset?: [dx, dy], anchor?: [x, y], merge?: string}",
             has_layers,
             free_transform

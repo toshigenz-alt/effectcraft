@@ -3329,3 +3329,106 @@ fn unselected_null_keeps_its_outline() {
     h.run_steps(2);
     assert_eq!(outlines(&h), 1, "a soloed null keeps its outline");
 }
+
+// ------------------------------------------------ local: rotating masks (2026-11-06 queue)
+
+/// The Plate (640×360, filling the comp) with one rectangle mask [200, 100]–[440, 260], selected;
+/// the Box layer above it. The mask's box centre is (320, 180).
+fn mask_rotate_harness() -> (Harness<'static, EffectcraftApp>, u64) {
+    let mut a = app();
+    let plate = a.session.active_comp().unwrap().layers.iter().find(|l| l.name == "Plate").unwrap().id.0;
+    a.session.execute("layer.addMask", json!({"layer": plate, "rect": [200, 100, 240, 160]})).unwrap();
+    a.session.execute("layer.select", json!({"layers": [plate]})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(move |_| a);
+    h.run_steps(4);
+    (h, plate)
+}
+
+fn rotation_of(h: &Harness<'_, EffectcraftApp>, name: &str) -> f64 {
+    let l = h.state().session.active_comp().unwrap().layers.iter().find(|l| l.name == name).unwrap().clone();
+    l.props.prop("transform/rotation").unwrap().value.as_f64()
+}
+
+/// The mask's corners turned by `deg` (clockwise on screen) about (320, 180).
+fn turned(deg: f64) -> Vec<[f64; 2]> {
+    let (s, c) = deg.to_radians().sin_cos();
+    [[200.0, 100.0], [440.0, 100.0], [440.0, 260.0], [200.0, 260.0]]
+        .iter()
+        .map(|[x, y]| {
+            let (dx, dy) = (x - 320.0, y - 180.0);
+            [320.0 + dx * c - dy * s, 180.0 + dx * s + dy * c]
+        })
+        .collect()
+}
+
+fn same_corners(path: &effectcraft_engine::keyframe::ShapePath, want: &[[f64; 2]]) -> bool {
+    path.vertices.len() == want.len() && want.iter().all(|w| path.vertices.iter().any(|v| (v[0] - w[0]).abs() < 1.5 && (v[1] - w[1]).abs() < 1.5))
+}
+
+/// Local: the Rotation tool turns a mask — dragged from its path, or anywhere on its layer while
+/// its points are selected — instead of the layer; a click on the path selects the mask. One undo
+/// step. Elsewhere, with no mask points selected, it still turns the layer.
+#[test]
+fn rotation_tool_turns_a_mask_dragged_from_its_path_or_with_its_points_selected() {
+    let (mut h, _) = mask_rotate_harness();
+    h.state_mut().ui.tool = Tool::Rotate;
+    h.run_steps(2);
+    // A click on the path selects every point of the mask.
+    let at = screen(&h, [320.0, 100.0]);
+    click(&mut h, at);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 4, "a click on the mask path selects the mask");
+    h.state_mut().session.execute("mask.selectVertices", json!({"vertices": []})).unwrap();
+    h.run_steps(2);
+    // Dragged from the right edge a quarter turn round its centre: the mask turns, the layer not.
+    let undo = h.state().session.history.undo.len();
+    let (from, to) = (screen(&h, [440.0, 180.0]), screen(&h, [320.0, 300.0]));
+    drag(&mut h, from, to);
+    let path = mask_path(&h, "Plate");
+    assert!(same_corners(&path, &turned(90.0)), "{:?}", path.vertices);
+    assert_eq!(rotation_of(&h, "Plate"), 0.0, "the layer did not turn");
+    assert_eq!(h.state().session.history.undo.len(), undo + 1, "one undo step");
+    // Its points are selected now: a drag inside the mask (not on its path) turns it back.
+    assert_eq!(h.state().session.state.selected_vertices.len(), 4);
+    let (from, to) = (screen(&h, [320.0, 250.0]), screen(&h, [390.0, 180.0]));
+    drag(&mut h, from, to);
+    let path = mask_path(&h, "Plate");
+    assert!(same_corners(&path, &turned(0.0)), "{:?}", path.vertices);
+    assert_eq!(rotation_of(&h, "Plate"), 0.0);
+    // No mask points selected, away from the path: the layer turns, as before.
+    h.state_mut().session.execute("mask.selectVertices", json!({"vertices": []})).unwrap();
+    h.run_steps(2);
+    let (from, to) = (screen(&h, [600.0, 180.0]), screen(&h, [320.0, 340.0]));
+    drag(&mut h, from, to);
+    assert!(rotation_of(&h, "Plate").abs() > 1.0, "the layer turned: {}", rotation_of(&h, "Plate"));
+}
+
+/// Local: the free-transform box rotates from anywhere just outside it (within 40 points of an
+/// edge), not only beside a corner, and a drawn rotate cursor shows there; Cmd+T (Ctrl+T) with a
+/// mask selected opens the box with the Selection tool.
+#[test]
+fn free_transform_rotates_from_just_outside_any_edge_and_cmd_t_opens_it() {
+    let (mut h, plate) = mask_rotate_harness();
+    h.state_mut().ui.tool = Tool::Rotate;
+    // Select the mask (one of its points), then Cmd+T.
+    let mask = h.state().session.active_comp().unwrap().layer(LayerId(plate)).unwrap().masks().unwrap().groups().next().unwrap().uid;
+    h.state_mut().session.execute("mask.selectVertices", json!({"vertices": [{"layer": plate, "mask": mask, "index": 0}]})).unwrap();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(3);
+    assert!(h.state().auto.find("viewer.freeTransform.handle.0").is_some(), "Cmd+T opened the free-transform box");
+    assert_eq!(h.state().ui.tool, Tool::Selection);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 4, "the whole mask");
+    // Hovering 30 points right of the middle of the box's right edge: the rotate zone.
+    let edge = rect(&h, "viewer.freeTransform.handle.5").center();
+    let out = edge + vec2(30.0, 0.0);
+    h.input_mut().events.push(Event::PointerMoved(out));
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "the drawn rotate cursor replaces the system one");
+    // A quarter turn from there turns the mask about the box's centre.
+    let c = screen(&h, [320.0, 180.0]);
+    let r = out - c;
+    drag(&mut h, out, c + vec2(-r.y, r.x));
+    let path = mask_path(&h, "Plate");
+    assert!(same_corners(&path, &turned(90.0)), "{:?}", path.vertices);
+    assert_eq!(rotation_of(&h, "Plate"), 0.0);
+}

@@ -192,7 +192,8 @@ pub fn active_contexts(app: &EffectcraftApp) -> Vec<&'static str> {
         Tool::Orbit | Tool::PanCamera | Tool::Dolly => out.push("Camera"),
         _ => {}
     }
-    if app.session.selected_mask().is_some() {
+    // (Local: mask points selected in the viewer count too, for Free Transform Points' Cmd+T.)
+    if app.session.selected_mask().is_some() || !app.session.state.selected_vertices.is_empty() {
         out.push("Mask");
     }
     out

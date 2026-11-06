@@ -172,6 +172,8 @@ pub(super) fn pen_cursor(ctx: &egui::Context, at: Pos2, icon: crate::icons::Icon
     let tip = match icon {
         Icon::PenAdd | Icon::PenDelete | Icon::MaskFeather => vec2(6.0, 2.5),
         Icon::PenConvert => vec2(8.0, 3.5),
+        // Local: the rotate cursor turns about its middle.
+        Icon::Rotate => vec2(8.0, 8.0),
         _ => vec2(8.0, 1.8),
     };
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("viewer-pen-cursor")));

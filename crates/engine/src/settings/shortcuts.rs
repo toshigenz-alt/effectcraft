@@ -50,6 +50,9 @@ const SCOPES: &[(&str, &str)] = &[
     ("file.applyInterpretation", "Project"),
     ("project.deleteWithoutConfirmation", "Project"),
     ("renderQueue.duplicate", "RenderQueue"),
+    // Local: Cmd+T is Free Transform Points while a mask is selected (After Effects), the Type
+    // tools otherwise.
+    ("path.freeTransform", "Mask"),
 ];
 
 /// Scope of an engine command or menu entry from its binding key.

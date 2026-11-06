@@ -171,6 +171,31 @@ fn vertex_delta(app: &EffectcraftApp, layer: effectcraft_engine::project::LayerI
     })
 }
 
+/// Local: select every point of mask `m` on layer `l` (unless two or more of them already are) and
+/// show the free-transform box on it, with the Selection tool.
+fn begin_free_transform_points(app: &mut EffectcraftApp, ctx: &egui::Context, l: effectcraft_engine::project::LayerId, m: u64) {
+    let picked = app.session.state.selected_vertices.iter().filter(|v| v.layer == l && v.mask == m).count();
+    if picked < 2 {
+        let t = app.session.time();
+        let n = app
+            .session
+            .active_comp()
+            .and_then(|c| c.layer(l))
+            .and_then(|layer| {
+                let lt = layer.layer_time(t);
+                layer.masks()?.find_group(m)?.get("path").map(|p| p.value_at(lt))
+            })
+            .map_or(0, |v| match v {
+                effectcraft_engine::keyframe::Value::Path(sp) => sp.vertices.len(),
+                _ => 0,
+            });
+        let all: Vec<Value> = (0..n).map(|index| json!({"layer": l.0, "mask": m, "index": index})).collect();
+        let _ = app.session.execute("mask.selectVertices", json!({"vertices": all}));
+    }
+    app.ui.tool = crate::state::Tool::Selection;
+    crate::panels::viewer_overlays::begin_free_transform(ctx, l, m);
+}
+
 /// Local: the title of the box that reports how many items `id` removed (`None`: not one of
 /// the Dependencies commands that remove items).
 fn removed_count_title(id: &str) -> Option<&'static str> {
@@ -293,6 +318,16 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             return Ok(Value::Null);
         }
         return crate::panels::delete_items::delete_confirmed(app, ctx, json!({}));
+    }
+    // Local: Free Transform Points (Cmd+T, or its menu entry) with a mask selected opens the
+    // free-transform box on it in the viewer, with the Selection tool, as After Effects does.
+    // With values it transforms directly; with no mask selected its form opens as before.
+    if id == "path.freeTransform"
+        && !["scale", "rotation", "offset"].iter().any(|k| params.get(*k).is_some())
+        && let Some((l, m)) = app.session.state.selected_vertices.first().map(|v| (v.layer, v.mask)).or_else(|| app.session.selected_mask())
+    {
+        begin_free_transform_points(app, ctx, l, m);
+        return Ok(json!({"freeTransform": m}));
     }
     let now = app.now();
     // Closing a modified project asks to save it first; the command runs once answered.

@@ -972,6 +972,26 @@ fn phase_hover(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, resp
                 }
                 egui::CursorIcon::None
             }
+            // Local: the Rotation tool, and the free-transform box's rotate zone (or its rotate
+            // drag), show a drawn rotate cursor (egui has none); the box's handles resize and its
+            // inside moves.
+            Tool::Rotate => {
+                pen_cursor(&ctx, hp, crate::icons::Icon::Rotate);
+                egui::CursorIcon::None
+            }
+            Tool::Selection if ft_rotating(ui) || v.ft.as_ref().and_then(|f| ov::ft_zone(f, hp)).is_some() => {
+                match (ft_rotating(ui), v.ft.as_ref().and_then(|f| ov::ft_zone(f, hp))) {
+                    (true, _) | (_, Some(ov::FtZone::Rotate)) => {
+                        pen_cursor(&ctx, hp, crate::icons::Icon::Rotate);
+                        egui::CursorIcon::None
+                    }
+                    (_, Some(ov::FtZone::Handle(0 | 2))) => egui::CursorIcon::ResizeNwSe,
+                    (_, Some(ov::FtZone::Handle(1 | 3))) => egui::CursorIcon::ResizeNeSw,
+                    (_, Some(ov::FtZone::Handle(4 | 6))) => egui::CursorIcon::ResizeVertical,
+                    (_, Some(ov::FtZone::Handle(_))) => egui::CursorIcon::ResizeHorizontal,
+                    _ => egui::CursorIcon::Move,
+                }
+            }
             t if t.puppet_kind().is_some() => match super::puppet_tool::hit(&pin_hits, hp) {
                 Some((_, super::puppet_tool::PinPart::Ring)) => egui::CursorIcon::Alias,
                 Some((_, super::puppet_tool::PinPart::Scale)) => egui::CursorIcon::ResizeNwSe,
@@ -1153,6 +1173,13 @@ fn phase_dragstart(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, 
                 })
             }
             Tool::MaskFeather => ov::begin_feather(app, ectx, &paths, &map, press).map(Gesture::Overlay),
+            // Local: the Rotation tool turns a mask — the one under the press, or the one whose
+            // points are selected when the press is on its layer — instead of the layer.
+            Tool::Rotate if rotate_mask_target(app, ectx, &paths, &map, press, vertex_at(press, false).map(|h| (h.layer, h.mask))).is_some() => {
+                rotate_mask_target(app, ectx, &paths, &map, press, vertex_at(press, false).map(|h| (h.layer, h.mask)))
+                    .and_then(|(l, m)| ov::rotate_mask_drag(&paths, &map, l, m, &select_mask_points(app, &paths, l, m), press))
+                    .map(Gesture::Overlay)
+            }
             Tool::Rotate => pick(app, ectx, cpt, mods.shift).map(|l| {
                 let layer = comp.layer(l).cloned();
                 let sign = layer.as_ref().map_or(1.0, |l| rotation_sign(ectx, l));
@@ -1760,6 +1787,13 @@ fn phase_clicked(app: &mut EffectcraftApp, ectx: &EvalCtx, resp: &egui::Response
                     let _ = app.session.execute("mask.convertVertex", json!({"layer": h.layer.0, "mask": h.mask, "index": h.index}));
                 }
             }
+            // Local: a Rotation-tool click on a mask path selects that mask (all its points).
+            Tool::Rotate if mask_under(&paths, &map, pos, vertex_at(pos, false).map(|h| (h.layer, h.mask))).is_some() => {
+                if let Some((l, m)) = mask_under(&paths, &map, pos, vertex_at(pos, false).map(|h| (h.layer, h.mask))) {
+                    let _ = app.session.execute("layer.select", json!({"layers": [l.0]}));
+                    select_mask_points(app, &paths, l, m);
+                }
+            }
             Tool::Selection if ft.is_some() && ft.as_ref().and_then(|f| ov::begin_ft_drag(f, pos, &map)).is_none() => {
                 // Clicking away from the free-transform box ends it.
                 ov::end_free_transform(&ctx);
@@ -1944,3 +1978,48 @@ use view::{aux_views, locked_pane};
 
 #[cfg(test)]
 mod tests;
+
+/// Local: whether a free-transform rotate drag is under way (its cursor stays while dragging).
+fn ft_rotating(ui: &egui::Ui) -> bool {
+    matches!(ui.data(|d| d.get_temp::<Gesture>(egui::Id::unique("viewer-gesture"))), Some(Gesture::Overlay(ov::Drag::Ft { mode: 2, .. })))
+}
+
+/// Local: the mask whose path or point is under `pos` (`on_vertex`: the point hit there, if any).
+fn mask_under(paths: &[ov::PathInfo], map: &ViewerMap, pos: Pos2, on_vertex: Option<(LayerId, u64)>) -> Option<(LayerId, u64)> {
+    let masks: Vec<ov::PathInfo> = paths.iter().filter(|p| p.is_mask).cloned().collect();
+    if let Some(hit) = on_vertex.filter(|(l, m)| masks.iter().any(|p| p.layer == *l && p.uid == *m)) {
+        return Some(hit);
+    }
+    ov::segment_at(&masks, map, pos, 6.0).map(|(l, m, ..)| (l, m))
+}
+
+/// Local: the mask a Rotation-tool press turns: the one under the press, else the mask whose
+/// points are selected when the press is on their layer.
+fn rotate_mask_target(
+    app: &EffectcraftApp,
+    ectx: &EvalCtx,
+    paths: &[ov::PathInfo],
+    map: &ViewerMap,
+    press: Pos2,
+    on_vertex: Option<(LayerId, u64)>,
+) -> Option<(LayerId, u64)> {
+    if let Some(hit) = mask_under(paths, map, press, on_vertex) {
+        return Some(hit);
+    }
+    let v = app.session.state.selected_vertices.first()?;
+    let shown = paths.iter().any(|p| p.is_mask && p.layer == v.layer && p.uid == v.mask);
+    (shown && layers_at(ectx, map.to_comp(press)).any(|l| l.id == v.layer)).then_some((v.layer, v.mask))
+}
+
+/// Local: the selected points of mask `m` on layer `l`; fewer than two selected selects all of its
+/// points first (the whole mask turns).
+fn select_mask_points(app: &mut EffectcraftApp, paths: &[ov::PathInfo], l: LayerId, m: u64) -> Vec<usize> {
+    let sel: Vec<usize> = app.session.state.selected_vertices.iter().filter(|v| v.layer == l && v.mask == m).map(|v| v.index).collect();
+    if sel.len() >= 2 {
+        return sel;
+    }
+    let n = paths.iter().find(|p| p.layer == l && p.uid == m).map_or(0, |p| p.sp.vertices.len());
+    let all: Vec<serde_json::Value> = (0..n).map(|index| json!({"layer": l.0, "mask": m, "index": index})).collect();
+    let _ = app.session.execute("mask.selectVertices", json!({"vertices": all}));
+    (0..n).collect()
+}
