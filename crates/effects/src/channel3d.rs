@@ -506,7 +506,7 @@ pub fn crypto_stripe_width(aw: u32, ah: u32) -> usize {
 #[inline]
 pub fn crypto_colors_display(c: [f32; 3], m: f32, i: usize, aw: u32, ah: u32) -> [f32; 3] {
     let w = (aw as usize).max(1);
-    let lit = ((i % w + i / w) / crypto_stripe_width(aw, ah)) % 2 == 0;
+    let lit = ((i % w + i / w) / crypto_stripe_width(aw, ah)).is_multiple_of(2);
     let lift = if lit { 0.5 * m } else { 0.0 };
     c.map(|v| v * (1.0 - 0.5 * m) + lift)
 }
