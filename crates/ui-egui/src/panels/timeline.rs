@@ -4159,7 +4159,8 @@ fn prop_value_cell(app: &mut EffectcraftApp, ui: &mut egui::Ui, g: &mut Rw, rc: 
 
     let value = ectx.value(layer, prop);
     let vx = (cw.switches + 4.0).max(name_x + 120.0);
-    let ve = ValueEdit::new(ui, &lp, layer, prop, pos2(vx, cy));
+    let mut ve = ValueEdit::new(ui, &lp, layer, prop, pos2(vx, cy));
+    ve.remap_fps = remap_fps(layer, prop, ectx.comp.frame_rate.as_f64());
     let dims = value_editor(app, ui, &ve, &value, &mut *actions);
     if !dims.is_empty() {
         dim_hits.push((*uid, dims));
@@ -5766,6 +5767,9 @@ struct ValueEdit<'a> {
     merge: String,
     scrub: bool,
     proportional: bool,
+    /// The comp's frame rate when `prop` is Time Remap (local): its seconds are shown and typed
+    /// as frames.
+    remap_fps: Option<f64>,
 }
 
 impl<'a> ValueEdit<'a> {
@@ -5778,7 +5782,7 @@ impl<'a> ValueEdit<'a> {
         // Proportional Scrubbing (After Effects 26.2): Ctrl+Alt (Cmd+Opt) spreads the change over the
         // selected layers by selection order, the first unchanged and the last by all of it.
         let proportional = scrub && ui.input(|i| widgets::proportional_scrub(i.modifiers));
-        Self { p, layer, prop, at, uid, merge: format!("scrub-{uid}"), scrub, proportional }
+        Self { p, layer, prop, at, uid, merge: format!("scrub-{uid}"), scrub, proportional, remap_fps: None }
     }
 
     /// Queues the `prop.set` of one edit; consecutive edits of the property (a scrub) are one undo step.
@@ -5822,6 +5826,25 @@ fn value_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>,
     Vec::new()
 }
 
+/// How close to a whole frame a Time Remap value shows without decimals (seconds × fps is not
+/// exact in floating point).
+const REMAP_FRAME_EPS: f64 = 1e-6;
+
+/// The comp's `fps` when `prop` is `layer`'s Time Remap (local: shown in frames), else `None`.
+fn remap_fps(layer: &Layer, prop: &Property, fps: f64) -> Option<f64> {
+    (fps > 0.0 && layer.props.get("timeRemap").is_some_and(|p| p.uid == prop.uid)).then_some(fps)
+}
+
+/// Time Remap's stored seconds as frames of a comp at `fps`: frame 0 is the source's start.
+fn remap_to_frames(secs: f64, fps: f64) -> f64 {
+    secs * fps
+}
+
+/// Frames typed or scrubbed into Time Remap, back to the seconds it stores.
+fn remap_from_frames(frames: f64, fps: f64) -> f64 {
+    frames / fps
+}
+
 /// A number: scrubbable hot text, or the angle field.
 fn scalar_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>, actions: &mut Vec<(String, serde_json::Value)>, value: &Value) {
     let Value::Scalar(v) = value else { return };
@@ -5845,16 +5868,28 @@ fn scalar_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>
         // A Range Selector's Start, End and Offset count characters with Units = Index (#1814).
         let pct = (matches!(prop.ui, ParamUi::Percent) || prop.match_id == "opacity") && !effectcraft_engine::render::text::in_index_units(layer, uid);
         let suffix = if pct { "%" } else { "" };
+        // Time Remap (local): seconds stored, frames shown — whole frames, or one decimal between
+        // two (an interpolated value).
+        let (shown, decimals) = match ve.remap_fps {
+            Some(fps) => {
+                let f = remap_to_frames(*v, fps);
+                (f, if (f - f.round()).abs() < REMAP_FRAME_EPS { 0 } else { 1 })
+            }
+            None => (*v, dec.max(1)),
+        };
         let (r, nv, _) = widgets::hot_number_at(
             ui,
             pos2(x, y),
             egui::Id::unique(("v", uid, 0)),
-            *v,
-            &widgets::HotSpec { speed, range: (min, max), decimals: dec.max(1), suffix },
+            shown,
+            &widgets::HotSpec { speed, range: (min, max), decimals, suffix },
             &vt,
         );
         app.auto.add(&format!("timeline.prop.{uid}.value"), r, &prop.name);
         if let Some(nv) = nv {
+            // (Not rounded to whole frames: a scrub adds each pointer frame's small move to the
+            // current value, so rounding would stall a slow or Ctrl scrub.)
+            let nv = ve.remap_fps.map_or(nv, |fps| remap_from_frames(nv, fps));
             ve.set(actions, json!(nv));
         }
     }
