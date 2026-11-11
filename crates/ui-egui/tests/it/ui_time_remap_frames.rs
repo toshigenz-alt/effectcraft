@@ -78,9 +78,10 @@ fn first_key_secs(h: &Harness<'_, EffectcraftApp>, layer: u64) -> f64 {
     }
 }
 
-/// Typing a frame stores frame ÷ fps seconds, and the field shows the frame again: whole
-/// frames without decimals, a value between two frames with one. 23.976 is the rate where
-/// seconds × fps does not come back exact.
+/// Typing a frame stores frame ÷ fps seconds and the field shows the frame again, always a whole
+/// one (user, 2026-11-11): a typed 12.5 is set as 13; a value between two frames (as between two
+/// keys) shows the frame footage shows, 12.5 → 12. 23.976 is the rate where seconds × fps does
+/// not come back exact.
 #[test]
 fn time_remap_is_shown_and_typed_in_frames() {
     for fps in [30.0, 23.976] {
@@ -97,19 +98,26 @@ fn time_remap_is_shown_and_typed_in_frames() {
         let field = format!("timeline.prop.{uid}.value");
         assert_eq!(texts(&h, rect_of(&h, &field)), vec!["0".to_string()], "{fps} fps: at the source's start");
 
-        for (typed, shown) in [("45", "45"), ("24", "24"), ("12.5", "12.5")] {
+        for (typed, set) in [("45", 45.0), ("24", 24.0), ("12.5", 13.0), ("7.4", 7.0)] {
             type_into(&mut h, &field, typed);
             let secs = first_key_secs(&h, l);
-            let want = typed.parse::<f64>().unwrap() / rate;
+            let want = set / rate;
             assert!((secs - want).abs() < 1e-9, "{fps} fps: typed {typed} frames, stored {secs} s, want {want} s");
-            assert_eq!(texts(&h, rect_of(&h, &field)), vec![shown.to_string()], "{fps} fps: typed {typed}");
+            assert_eq!(texts(&h, rect_of(&h, &field)), vec![format!("{set}")], "{fps} fps: typed {typed}");
         }
+        // A fractional value set elsewhere (a script, an interpolated key) shows its frame, floored.
+        h.state_mut().session.execute("prop.set", json!({"layer": l, "prop": uid, "value": 12.5 / rate})).unwrap();
+        h.run_steps(3);
+        assert!((first_key_secs(&h, l) - 12.5 / rate).abs() < 1e-9, "{fps} fps: the fractional value is stored");
+        assert_eq!(texts(&h, rect_of(&h, &field)), vec!["12".to_string()], "{fps} fps: 12.5 frames");
     }
 }
 
-/// Scrubbing Time Remap moves 1 frame per 10 pixels (user, 2026-11-11): 100 px right from
-/// frame 0 lands just short of frame 10 — egui starts a drag only after the pointer has moved a
-/// few pixels (measured: 3 px, so 9.7), as for every hot number. 1 frame/px would give ~97.
+/// Scrubbing Time Remap moves 1 frame per 10 pixels (user, 2026-11-11) and sets whole frames
+/// only: 100 px right from frame 0 is 9.7 frames of movement (egui starts a drag only after the
+/// pointer has moved ~3 px, as for every hot number), set as frame 10. Each pointer frame moves
+/// 0.1 frame, so without the kept-aside unrounded position the scrub would round back to 0 every
+/// frame and never move; 1 frame/px would give ~97.
 #[test]
 fn time_remap_scrubs_one_frame_per_ten_pixels() {
     let mut s = Session::default();
@@ -126,6 +134,6 @@ fn time_remap_scrubs_one_frame_per_ten_pixels() {
     let from = rect_of(&h, &field).center();
     slow_drag(&mut h, from, 100);
     let frames = first_key_secs(&h, l) * 30.0;
-    assert!((9.5..=10.0 + 1e-9).contains(&frames), "100 px moved {frames} frames, want ~10");
-    assert_eq!(texts(&h, rect_of(&h, &field)), vec![format!("{frames:.1}")]);
+    assert!((frames - 10.0).abs() < 1e-9, "100 px set {frames} frames, want frame 10");
+    assert_eq!(texts(&h, rect_of(&h, &field)), vec!["10".to_string()]);
 }

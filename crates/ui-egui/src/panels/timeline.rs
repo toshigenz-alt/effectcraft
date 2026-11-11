@@ -5826,9 +5826,15 @@ fn value_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>,
     Vec::new()
 }
 
-/// How close to a whole frame a Time Remap value shows without decimals (seconds × fps is not
-/// exact in floating point).
+/// How close to a whole frame counts as on it (seconds × fps is not exact in floating point).
 const REMAP_FRAME_EPS: f64 = 1e-6;
+
+/// The whole frame a Time Remap value (in frames) shows: the frame footage displays with Frame
+/// Blending off — `frame_position` floors — so 12.5 (between two keys) is 12, and 23.9999999
+/// (float error on a whole frame) is 24.
+fn remap_frame_shown(frames: f64) -> f64 {
+    (frames + REMAP_FRAME_EPS).floor()
+}
 
 /// Time Remap scrubs 1 frame per 10 pointer pixels (user, 2026-11-11); Shift ×10, Ctrl ×0.1 as
 /// for every hot number.
@@ -5872,12 +5878,17 @@ fn scalar_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>
         // A Range Selector's Start, End and Offset count characters with Units = Index (#1814).
         let pct = (matches!(prop.ui, ParamUi::Percent) || prop.match_id == "opacity") && !effectcraft_engine::render::text::in_index_units(layer, uid);
         let suffix = if pct { "%" } else { "" };
-        // Time Remap (local): seconds stored, frames shown — whole frames, or one decimal between
-        // two (an interpolated value).
+        // Time Remap (local): seconds stored, whole frames shown and set. A scrub's unrounded
+        // position is kept aside, so each pointer frame's small move adds up instead of being
+        // rounded away; the property only ever receives whole frames.
+        let scrub_acc = egui::Id::unique(("remap-scrub", uid));
         let (shown, decimals) = match ve.remap_fps {
             Some(fps) => {
-                let f = remap_to_frames(*v, fps);
-                (f, if (f - f.round()).abs() < REMAP_FRAME_EPS { 0 } else { 1 })
+                let held = if ve.scrub { ui.data(|d| d.get_temp::<f64>(scrub_acc)) } else { None };
+                if !ve.scrub {
+                    ui.data_mut(|d| d.remove::<f64>(scrub_acc));
+                }
+                (held.unwrap_or_else(|| remap_frame_shown(remap_to_frames(*v, fps))), 0)
             }
             None => (*v, dec.max(1)),
         };
@@ -5892,10 +5903,19 @@ fn scalar_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>
         );
         app.auto.add(&format!("timeline.prop.{uid}.value"), r, &prop.name);
         if let Some(nv) = nv {
-            // (Not rounded to whole frames: a scrub adds each pointer frame's small move to the
-            // current value, so rounding would stall a slow or Ctrl scrub.)
-            let nv = ve.remap_fps.map_or(nv, |fps| remap_from_frames(nv, fps));
-            ve.set(actions, json!(nv));
+            match ve.remap_fps {
+                Some(fps) => {
+                    if ve.scrub {
+                        ui.data_mut(|d| d.insert_temp(scrub_acc, nv));
+                    }
+                    let whole = nv.round();
+                    // A scrub sets the property only when it reaches another whole frame.
+                    if !ve.scrub || (whole - remap_to_frames(*v, fps)).abs() > REMAP_FRAME_EPS {
+                        ve.set(actions, json!(remap_from_frames(whole, fps)));
+                    }
+                }
+                None => ve.set(actions, json!(nv)),
+            }
         }
     }
 }
