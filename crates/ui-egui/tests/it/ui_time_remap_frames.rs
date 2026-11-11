@@ -54,6 +54,21 @@ fn type_into(h: &mut Harness<'_, EffectcraftApp>, id: &str, text: &str) {
     h.run_steps(3);
 }
 
+/// Drag one pixel per frame, as a slow hand does.
+fn slow_drag(h: &mut Harness<'_, EffectcraftApp>, from: egui::Pos2, dx: i32) {
+    h.event(egui::Event::PointerMoved(from));
+    h.step();
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    for k in 1..=dx {
+        h.event(egui::Event::PointerMoved(from + vec2(k as f32, 0.0)));
+        h.step();
+    }
+    let to = from + vec2(dx as f32, 0.0);
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.run_steps(3);
+}
+
 /// Time Remap's value at the first key (the current time, 0) in seconds.
 fn first_key_secs(h: &Harness<'_, EffectcraftApp>, layer: u64) -> f64 {
     let pr = h.state().session.active_comp().unwrap().layer(LayerId(layer)).unwrap().props.get("timeRemap").unwrap().clone();
@@ -90,4 +105,27 @@ fn time_remap_is_shown_and_typed_in_frames() {
             assert_eq!(texts(&h, rect_of(&h, &field)), vec![shown.to_string()], "{fps} fps: typed {typed}");
         }
     }
+}
+
+/// Scrubbing Time Remap moves 1 frame per 10 pixels (user, 2026-11-11): 100 px right from
+/// frame 0 lands just short of frame 10 — egui starts a drag only after the pointer has moved a
+/// few pixels (measured: 3 px, so 9.7), as for every hot number. 1 frame/px would give ~97.
+#[test]
+fn time_remap_scrubs_one_frame_per_ten_pixels() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"name": "Inner", "width": 64, "height": 64, "frameRate": 30, "duration": 4})).unwrap();
+    s.execute("comp.new", json!({"name": "Outer", "width": 64, "height": 64, "frameRate": 30, "duration": 4})).unwrap();
+    let l = s.execute("layer.addItem", json!({"item": "Inner"})).unwrap()["layer"].as_u64().unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &egui::Context::default(), "layer.enableTimeRemap", json!({"layers": [l]})).unwrap();
+    h.run_steps(4);
+    let uid = h.state().session.active_comp().unwrap().layer(LayerId(l)).unwrap().props.get("timeRemap").unwrap().uid;
+    let field = format!("timeline.prop.{uid}.value");
+    assert_eq!(first_key_secs(&h, l), 0.0);
+    let from = rect_of(&h, &field).center();
+    slow_drag(&mut h, from, 100);
+    let frames = first_key_secs(&h, l) * 30.0;
+    assert!((9.5..=10.0 + 1e-9).contains(&frames), "100 px moved {frames} frames, want ~10");
+    assert_eq!(texts(&h, rect_of(&h, &field)), vec![format!("{frames:.1}")]);
 }

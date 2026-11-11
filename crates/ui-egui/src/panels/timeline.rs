@@ -5830,6 +5830,10 @@ fn value_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>,
 /// exact in floating point).
 const REMAP_FRAME_EPS: f64 = 1e-6;
 
+/// Time Remap scrubs 1 frame per 10 pointer pixels (user, 2026-11-11); Shift ×10, Ctrl ×0.1 as
+/// for every hot number.
+const REMAP_SCRUB_FRAMES_PER_PX: f64 = 0.1;
+
 /// The comp's `fps` when `prop` is `layer`'s Time Remap (local: shown in frames), else `None`.
 fn remap_fps(layer: &Layer, prop: &Property, fps: f64) -> Option<f64> {
     (fps > 0.0 && layer.props.get("timeRemap").is_some_and(|p| p.uid == prop.uid)).then_some(fps)
@@ -5877,6 +5881,7 @@ fn scalar_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, ve: &ValueEdit<'_>
             }
             None => (*v, dec.max(1)),
         };
+        let speed = if ve.remap_fps.is_some() { REMAP_SCRUB_FRAMES_PER_PX } else { speed };
         let (r, nv, _) = widgets::hot_number_at(
             ui,
             pos2(x, y),
