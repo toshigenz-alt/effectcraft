@@ -23,6 +23,7 @@ mod color3;
 mod color_fx;
 pub mod controls;
 pub mod crypto_select;
+mod deflicker;
 mod distort;
 mod distort2;
 mod distort3;
@@ -673,6 +674,7 @@ pub fn registry() -> &'static [EffectSpec] {
         v.extend(sim3::specs());
         v.extend(channel3d::specs());
         v.extend(time_fx::specs());
+        v.extend(deflicker::specs());
         v.extend(audio_fx::specs());
         v.extend(paint::specs());
         v.extend(puppet::specs());
@@ -1349,6 +1351,7 @@ pub const TIME_DEPENDENT: &[&str] = &[
     "ec.time.ccforcemotionblur",
     "ec.time.ccwidetime",
     "ec.time.pixelmotionblur",
+    deflicker::ID,
     // Refine mattes' Reduce Chatter / motion blur read neighbouring frames.
     "ec.matte.refinesoft",
     "ec.matte.refinehard",
