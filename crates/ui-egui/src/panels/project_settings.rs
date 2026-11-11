@@ -30,9 +30,12 @@ const GREEN: [u8; 3] = [0x7b, 0xd8, 0x8f];
 const BLUE: [u8; 3] = [0x6c, 0xa8, 0xff];
 const YELLOW: [u8; 3] = [0xf2, 0xd3, 0x5b];
 const LIGHT_PINK: [u8; 3] = [0xf4, 0xb6, 0xd2];
+const RED: [u8; 3] = [0xff, 0x6b, 0x6b];
+const LAVENDER: [u8; 3] = [0xc8, 0xb4, 0xf0];
 
-/// The Default button's colours; the kinds not listed keep their original colour.
-pub const DEFAULTS: &[(&str, [u8; 3])] = &[("comp", GREEN), ("sequence", BLUE), ("video", YELLOW), ("audio", LIGHT_PINK)];
+/// The Default button's colours; the kinds not listed keep their original colour. Still Image
+/// Lavender and Solid Red joined the set from the user's own choice (2026-11-11).
+pub const DEFAULTS: &[(&str, [u8; 3])] = &[("comp", GREEN), ("sequence", BLUE), ("video", YELLOW), ("audio", LIGHT_PINK), ("still", LAVENDER), ("solid", RED)];
 
 /// The colours the list offers (beside Original and the colour picker).
 pub const PRESETS: &[(&str, [u8; 3])] = &[
@@ -40,11 +43,11 @@ pub const PRESETS: &[(&str, [u8; 3])] = &[
     ("Blue", BLUE),
     ("Yellow", YELLOW),
     ("Light Pink", LIGHT_PINK),
-    ("Red", [0xff, 0x6b, 0x6b]),
+    ("Red", RED),
     ("Orange", [0xff, 0xa0, 0x50]),
     ("Aqua", [0x5f, 0xd7, 0xd7]),
     ("Purple", [0xb3, 0x8c, 0xff]),
-    ("Lavender", [0xc8, 0xb4, 0xf0]),
+    ("Lavender", LAVENDER),
     ("Peach", [0xff, 0xc8, 0xa0]),
     ("Sea Foam", [0x9f, 0xe8, 0xc8]),
     ("Brown", [0xc8, 0x96, 0x6e]),
@@ -168,7 +171,9 @@ fn color_display(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
     }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        let d = ui.button(tr("Default")).on_hover_text(tr("Composition green, image sequence blue, video yellow, audio light pink; the rest original"));
+        let d = ui
+            .button(tr("Default"))
+            .on_hover_text(tr("Composition green, image sequence blue, video yellow, audio light pink, still image lavender, solid red; the rest original"));
         app.auto.add("projectSettings.default", d.rect, "Default");
         if d.clicked() {
             app.ui.project_name_colors = None;
@@ -192,8 +197,11 @@ mod tests {
         assert_eq!(color_of(None, "sequence"), Some(BLUE));
         assert_eq!(color_of(None, "video"), Some(YELLOW));
         assert_eq!(color_of(None, "audio"), Some(LIGHT_PINK));
-        assert_eq!(color_of(None, "still"), None);
+        assert_eq!(color_of(None, "still"), Some(LAVENDER));
+        assert_eq!(color_of(None, "solid"), Some(RED));
         assert_eq!(color_of(None, "folder"), None);
+        assert_eq!(color_of(None, "model"), None);
+        assert_eq!(color_of(None, "data"), None);
         // Original: an empty map.
         let original = BTreeMap::new();
         assert!(KINDS.iter().all(|(k, _)| color_of(Some(&original), k).is_none()));
