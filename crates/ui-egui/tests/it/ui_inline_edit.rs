@@ -746,3 +746,46 @@ fn typing_one_component_with_several_layers_selected_keeps_their_other_component
     assert_eq!(pos(&h, a), [40.0, 50.0, -300.0]);
     assert_eq!(pos(&h, b), [200.0, 120.0, -300.0], "B keeps its own X and Y");
 }
+
+/// Alt-clicking a stopwatch in Effect Controls adds an expression, as in the Timeline (it used to
+/// toggle the animation like a plain click): the property comes into view in the Timeline with
+/// the new expression's editor taking the keyboard, its text selected. A second Alt-click
+/// removes the expression; a plain click still toggles the animation.
+#[test]
+fn alt_clicking_a_stopwatch_in_effect_controls_adds_an_expression() {
+    let (mut h, _) = harness();
+    let (layer, slider) = {
+        let s = &mut h.state_mut().session;
+        let l = s.execute("layer.newSolid", json!({"name": "Plate", "color": "#406080"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.select", json!({"layers": [l]})).unwrap();
+        s.execute("effect.apply", json!({"layers": [l], "effect": "Slider Control"})).unwrap();
+        let props = s.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(l)).unwrap().props.clone();
+        (l, props.prop("effects/#1/slider").unwrap().uid)
+    };
+    // The layer is closed in the Timeline: the expression has to be revealed there.
+    h.state_mut().show_panel(effectcraft_ui_egui::dock::PanelKind::EffectControls);
+    h.run_steps(3);
+    assert!(h.state().auto.find(&format!("timeline.prop.{slider}.row")).is_none(), "Slider is not shown in the Timeline yet");
+    let keys = |h: &Harness<'_, EffectcraftApp>| {
+        h.state().session.active_comp().unwrap().layer(effectcraft_engine::project::LayerId(layer)).unwrap().props.find(slider).unwrap().keys.len()
+    };
+    let alt = Modifiers { alt: true, ..Modifiers::NONE };
+    let at = center(&h, &format!("effectControls.prop.{slider}.stopwatch"));
+    click_with(&mut h, at, alt);
+    assert!(expression(&h, layer, slider).is_some(), "an expression was added");
+    assert_eq!(keys(&h), 0, "Alt-click did not start the animation");
+    assert!(h.state().auto.find(&format!("timeline.prop.{slider}.expression")).is_some(), "its editor is shown in the Timeline");
+    type_text(&mut h, "50");
+    commit_expression(&mut h);
+    assert_eq!(expression(&h, layer, slider).as_deref(), Some("50"), "typing replaced the new expression");
+    // Alt-click again removes it; nothing takes the keyboard after it.
+    let at = center(&h, &format!("effectControls.prop.{slider}.stopwatch"));
+    click_with(&mut h, at, alt);
+    h.run_steps(5);
+    assert_eq!(expression(&h, layer, slider), None, "a second Alt-click removed it");
+    assert!(!h.ctx.egui_wants_keyboard_input(), "nothing has the keyboard");
+    // A plain click still toggles the animation.
+    let at = center(&h, &format!("effectControls.prop.{slider}.stopwatch"));
+    click_with(&mut h, at, Modifiers::NONE);
+    assert_eq!((keys(&h), expression(&h, layer, slider)), (1, None), "a plain click starts the animation");
+}

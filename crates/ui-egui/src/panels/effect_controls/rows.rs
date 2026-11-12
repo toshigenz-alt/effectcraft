@@ -168,7 +168,12 @@ fn prop_row(
             },
         );
         app.auto.add(&format!("effectControls.prop.{uid}.stopwatch"), swr, &prop.name);
-        if resp.clicked() {
+        if resp.clicked() && ui.input(|i| i.modifiers.alt) {
+            // Alt-click adds (or removes) an expression, as in the Timeline; its editor is in
+            // the Timeline, where the property is revealed.
+            actions.push(("prop.setExpression".into(), json!({"layer": layer.id.0, "prop": uid})));
+            crate::panels::timeline::expression_toggled(app, ui.ctx(), layer.id, uid, prop.expr.is_none(), true);
+        } else if resp.clicked() {
             actions.push(("prop.toggleAnimation".into(), json!({"layer": layer.id.0, "prop": uid, "selected": true})));
         }
     }
