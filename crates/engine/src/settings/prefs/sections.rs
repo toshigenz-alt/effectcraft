@@ -72,6 +72,10 @@ page!(ProjectPrefs {
     /// a template in the Render Queue ▸ Set as Default). Empty, or a name a new project lacks:
     /// the built-in default.
     default_output_module: String = String::new(),
+    /// Local (user's default): a project whose Time Display Style is Timecode shows Frames when
+    /// it opens or is made (File ▸ New, the untitled project at launch, Close Project). Ctrl+click
+    /// a time display still switches it back for that project; Feet + Frames stays.
+    time_in_frames: bool = true,
 });
 
 page!(AutoSave {

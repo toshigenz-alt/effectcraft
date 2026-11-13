@@ -462,6 +462,8 @@ fn save_a_copy_as_xml_opens_again() {
     assert!(text.starts_with("<?xml") && text.contains("<EffectCraftProject"));
     let before = s.project.to_json();
     let mut t = Session::default();
+    // Local: Show Time in Frames would turn the Timecode display into Frames as it opens.
+    t.prefs.project.time_in_frames = false;
     t.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
     assert_eq!(t.project.to_json(), before);
     // Saving a project opened from XML writes XML.

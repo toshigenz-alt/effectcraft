@@ -25,7 +25,23 @@ impl Session {
         // Local: the untitled project at launch is a new project too.
         if self.path.is_none() && self.project.items.is_empty() && self.project.render_queue.is_empty() {
             self.apply_app_output_module_default();
+            let mut p = (*self.project).clone();
+            if self.show_time_in_frames(&mut p) {
+                self.project = std::sync::Arc::new(p);
+                self.mark_saved();
+            }
         }
+    }
+
+    /// Local: Settings ▸ Project ▸ Show Time in Frames turns a project's Timecode display into
+    /// Frames as it opens or is made. Returns whether it changed `p`. Not an undo step.
+    pub fn show_time_in_frames(&self, p: &mut effectcraft_project::Project) -> bool {
+        use effectcraft_project::TimeDisplayStyle;
+        if !self.prefs.project.time_in_frames || p.settings.time_display != TimeDisplayStyle::Timecode {
+            return false;
+        }
+        p.settings.time_display = TimeDisplayStyle::Frames;
+        true
     }
 
     /// Local: give the (new) project the application-wide Output Module Movie Default

@@ -249,6 +249,7 @@ impl Session {
             }
         }
         self.layer_cache.clear();
+        self.show_time_in_frames(&mut p);
         self.project = Arc::new(p);
         // Its files may have changed since they were last stamped.
         self.disk_salt = None;

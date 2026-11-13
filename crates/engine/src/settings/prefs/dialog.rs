@@ -123,6 +123,10 @@ pub fn pages() -> Vec<Page> {
                 Section("New Project"),
                 s("project.useTemplate", "New Project Loads Template", B, true),
                 s("project.templatePath", "Template Project", Kind::Path, true),
+                s("project.timeInFrames", "Show Time in Frames", B, true),
+                Note(
+                    "Every project opened or made shows times as frames, not timecode (Project Settings ▸ Time Display Style). Ctrl+click a time display switches back for that project until it is opened again.",
+                ),
                 Section("Project Files"),
                 s("project.compactProjectFiles", "Save Compact Project Files", B, true),
                 Note(

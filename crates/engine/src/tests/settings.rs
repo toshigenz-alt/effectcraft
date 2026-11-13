@@ -502,6 +502,52 @@ fn h264_15_mbps_is_added_as_40() {
     assert_eq!(s.project.render_queue.last().unwrap().output.bitrate_kbps, 15_000);
 }
 
+/// Local (user's default): Settings ▸ Project ▸ Show Time in Frames (on) — a project whose Time
+/// Display Style is Timecode shows Frames when it opens or is made, without counting as a
+/// change. Ctrl+click (Project Settings) still switches one project back; Feet + Frames stays;
+/// off, the project's own style shows.
+#[test]
+fn projects_show_time_in_frames_when_opened_or_made() {
+    use effectcraft_project::TimeDisplayStyle as T;
+    let d = tmp("time-in-frames");
+    let path = |n: &str| d.join(n).to_string_lossy().to_string();
+    // A project saved in Timecode (the setting off while saving it).
+    let mut s = session_with_comp();
+    s.execute("prefs.set", json!({"key": "project.timeInFrames", "value": false})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Timecode);
+    s.execute("file.saveAs", json!({"path": path("tc.ecproj")})).unwrap();
+    s.execute("file.projectSettings", json!({"timeDisplay": "feet35"})).unwrap();
+    s.execute("file.saveAs", json!({"path": path("feet.ecproj")})).unwrap();
+    // Off: the project's own style.
+    s.execute("file.open", json!({"path": path("tc.ecproj")})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Timecode);
+    // On (the default).
+    let mut s = Session::default();
+    assert!(s.prefs.project.time_in_frames);
+    s.execute("file.open", json!({"path": path("tc.ecproj")})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Frames);
+    assert!(!s.is_dirty(), "showing frames is not a change to save");
+    assert!(crate::commands::time::display_time(&s, s.project.comps().next().unwrap().1, effectcraft_time::Tick::ZERO).starts_with("0000"));
+    // Ctrl+click back to Timecode holds for this project…
+    s.execute("file.projectSettings", json!({"timeDisplay": "timecode"})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Timecode);
+    // …until it is opened again.
+    s.execute("file.open", json!({"path": path("tc.ecproj")})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Frames);
+    s.execute("file.open", json!({"path": path("feet.ecproj")})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Feet35, "Feet + Frames stays");
+    s.execute("file.newProject", json!({})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Frames, "File ▸ New");
+    s.execute("file.closeProject", json!({})).unwrap();
+    assert_eq!(s.project.settings.time_display, T::Frames, "Close Project");
+    // The untitled project at launch.
+    let mut next = Session { config: Some(Arc::new(MemoryConfig::default())), ..Default::default() };
+    assert_eq!(next.project.settings.time_display, T::Timecode);
+    next.load_settings();
+    assert_eq!(next.project.settings.time_display, T::Frames, "a new launch");
+    assert!(!next.is_dirty());
+}
+
 #[test]
 fn project_files_are_indented_unless_compact_is_on() {
     let d = tmp("compact-project-files");
