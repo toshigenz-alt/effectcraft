@@ -444,6 +444,53 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// Local: the Project panel folders above an item, as a `/`-separated path of file-safe names
+/// ("" at the project root). Bounded: a folder loop or a missing folder ends the walk.
+fn panel_folders(p: &Project, parent: Option<ItemId>) -> String {
+    let mut names = vec![];
+    let mut seen = BTreeSet::new();
+    let mut cur = parent;
+    while let Some(id) = cur {
+        if !seen.insert(id) || names.len() >= 32 {
+            break;
+        }
+        let Some(item) = p.item(id) else { break };
+        names.push(collect_name(&item.name, "Folder"));
+        cur = item.parent;
+    }
+    names.reverse();
+    names.join("/")
+}
+
+/// Local: `name` made safe as one file or folder name on every platform: no separator, drive,
+/// wildcard or control character, no `.` / `..`, no trailing dots or spaces (Windows drops them),
+/// no reserved Windows device name, at most 120 characters, and never `(Footage)` (a moved
+/// collect folder is found by that name, `doc_path`). `fallback` when nothing usable is left.
+fn collect_name(name: &str, fallback: &str) -> String {
+    let clean: String = effectcraft_project::render_queue::sanitize(name).chars().map(|c| if c.is_control() { '_' } else { c }).take(120).collect();
+    let clean = clean.trim().trim_end_matches(['.', ' ']).to_string();
+    if clean.is_empty() || clean.chars().all(|c| c == '.') {
+        return fallback.to_string();
+    }
+    let stem = clean.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.ends_with(|c: char| c.is_ascii_digit() && c != '0'));
+    if reserved || clean.eq_ignore_ascii_case("(Footage)") { format!("_{clean}") } else { clean }
+}
+
+/// Local: `dir/name`, or the first `dir/other(k)` (k = 2, 3, …) no earlier file or folder took,
+/// as a filesystem that ignores case sees it; the result is taken.
+fn take_name(used: &mut BTreeSet<String>, dir: &str, name: &str, other: impl Fn(u32) -> String) -> String {
+    let join = |n: &str| if dir.is_empty() { n.to_string() } else { format!("{dir}/{n}") };
+    let mut path = join(name);
+    let mut k = 2u32;
+    while !used.insert(path.to_lowercase()) {
+        path = join(&other(k));
+        k = k.saturating_add(1);
+    }
+    path
+}
+
 fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
     let folder = str_p(p, "folder").ok_or_else(|| bad("file.collectFiles", "missing `folder`"))?.trim_end_matches('/').to_string();
     let stem = s
@@ -456,7 +503,12 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
     // Where every copy goes, before anything is made: a copy never lands on a file the project
     // reads (other footage, a proxy, the project file itself), and then nothing is written.
     let protected = s.protected_files();
-    let mut used_names = BTreeSet::new();
+    // Local: `(Footage)` keeps the Project panel's folders, and each image sequence gets a folder
+    // of its own, named after the folder its frames were in (After Effects-like): two sequences
+    // with the same frame names no longer share one folder. `used` holds every name taken, as a
+    // filesystem that ignores case sees it; a file two items read is copied once (`copy_of`).
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    let mut copy_of: BTreeMap<String, String> = BTreeMap::new();
     let mut plan: Vec<(ItemId, Vec<(String, String)>)> = vec![];
     for it in s.project.items.values() {
         let ItemKind::Footage(f) = &it.kind else { continue };
@@ -464,15 +516,25 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let files: Vec<&String> = if f.sequence.is_empty() { vec![&f.path] } else { f.sequence.iter().collect() };
+        let mut dir = panel_folders(&s.project, it.parent);
+        if !f.sequence.is_empty() {
+            let from =
+                files.first().and_then(|p| std::path::Path::new(p.as_str()).parent()).and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+            let base = collect_name(from.as_deref().unwrap_or(&it.name), "Sequence");
+            dir = take_name(&mut used, &dir, &base, |k| format!("{base} {k}"));
+        }
         let mut pairs = vec![];
         for src in files {
-            let mut name = std::path::Path::new(src).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "footage".into());
-            let mut k = 2;
-            while !used_names.insert(name.clone()) {
-                name = format!("{k}_{name}");
-                k += 1;
-            }
-            let dst = format!("{folder}/(Footage)/{name}");
+            let dst = match copy_of.get(src) {
+                Some(d) => d.clone(),
+                None => {
+                    let name = collect_name(&std::path::Path::new(src).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), "footage");
+                    let rel = take_name(&mut used, &dir, &name, |k| format!("{k}_{name}"));
+                    let dst = format!("{folder}/(Footage)/{rel}");
+                    copy_of.insert(src.clone(), dst.clone());
+                    dst
+                }
+            };
             // A file that is already where its copy goes stays (it is not copied onto itself).
             if !crate::output_guard::same_file(std::path::Path::new(src), std::path::Path::new(&dst))
                 && let Some(source) = protected.find(std::path::Path::new(&dst))
@@ -486,16 +548,26 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(source) = protected.find(std::path::Path::new(&out)) {
         return Err(EngineError::Other(format!("Nothing was collected. {}", source.refusal(&out, crate::output_guard::Use::Export))));
     }
-    // Collect Files makes its folder (and the footage folder inside it).
+    // Collect Files makes its folder (and the footage folders inside it).
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::create_dir_all(format!("{folder}/(Footage)")).map_err(|e| EngineError::Other(format!("cannot create {folder}: {e}")))?;
+    {
+        let mut dirs: BTreeSet<String> =
+            plan.iter().flat_map(|(_, pairs)| pairs.iter()).filter_map(|(_, dst)| dst.rsplit_once('/').map(|(d, _)| d.to_string())).collect();
+        dirs.insert(format!("{folder}/(Footage)"));
+        for d in dirs {
+            std::fs::create_dir_all(&d).map_err(|e| EngineError::Other(format!("cannot create {d}: {e}")))?;
+        }
+    }
     let mut proj = (*s.project).clone();
     let mut copied = 0;
     let mut errors = vec![];
+    let mut done: BTreeSet<String> = BTreeSet::new();
     for (id, pairs) in plan {
         let mut new_paths = vec![];
         for (src, dst) in &pairs {
-            if crate::output_guard::same_file(std::path::Path::new(src), std::path::Path::new(dst)) {
+            if !done.insert(dst.clone()) {
+                // Already copied for another item that reads the same file.
+            } else if crate::output_guard::same_file(std::path::Path::new(src), std::path::Path::new(dst)) {
                 copied += 1;
             } else {
                 match s.services.read_file(src).and_then(|bytes| s.write_output_with(&protected, dst, &bytes).map_err(std::io::Error::other)) {
