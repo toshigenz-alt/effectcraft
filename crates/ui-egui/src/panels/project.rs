@@ -857,6 +857,7 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
         (Icon::Gear, "interpret", "Interpret Footage"),
         (Icon::NewFolder, "newFolder", "Create a new Folder"),
         (Icon::NewComp, "newComp", "Create a new Composition"),
+        (Icon::Bolt, "erQuickComp", "Er Quick Comp: drop a scene's footage here (right-click: maker name)"),
     ] {
         let r = Rect::from_min_size(pos2(x, foot.min.y + 3.0), vec2(22.0, 22.0));
         let resp = widgets::icon_button(ui, r, icon, false, &t, egui::Id::unique(("pfoot", id))).on_hover_text(crate::i18n::tr(tip));
@@ -867,6 +868,7 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
                 app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).is_some_and(|i| matches!(i.kind, ItemKind::Footage(_)));
             match id {
                 "newComp" => crate::panels::dialogs::open_new_comp(app),
+                "erQuickComp" => actions.push(("file.erQuickComp".into(), json!({}))),
                 "newFolder" => actions.push(("project.newFolder".into(), json!({}))),
                 _ if footage => actions.push(("file.interpretFootage".into(), json!({}))),
                 _ => app.ui.status = "Interpret Footage: select a footage item".into(),
@@ -901,6 +903,46 @@ fn footer(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, foot: 
                 actions.push(("file.newCompFromSelection".into(), json!({"autoCryptomatte": true})));
                 egui::DragAndDrop::clear_payload(&ctx);
             }
+        }
+        // Local: footage dropped on ⚡ becomes the scene's comps (Er Quick Comp): the dragged row,
+        // or the whole selection when the row is part of it. Right-click sets the maker's name.
+        if id == "erQuickComp" {
+            if let Some(DragPayload::Item(iid)) = egui::DragAndDrop::payload::<DragPayload>(&ctx).as_deref()
+                && ui.rect_contains_pointer(r)
+            {
+                p.rect_stroke(r, 4.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+                if ctx.input(|i| i.pointer.any_released()) {
+                    let iid = ItemId(*iid);
+                    let selected = app.session.state.project_selection.contains(&iid);
+                    actions.push(("file.erQuickComp".into(), json!({"items": targets(app, iid, selected)})));
+                    egui::DragAndDrop::clear_payload(&ctx);
+                }
+            }
+            // Opens with the name selected, ready to type over; stays open while it is typed (a
+            // context menu closes on any click inside).
+            let (field, fresh) = (egui::Id::unique("erQuickCompMaker"), egui::Id::unique("erQuickCompMakerFresh"));
+            if resp.secondary_clicked() {
+                ctx.data_mut(|d| d.insert_temp(fresh, true));
+            }
+            egui::Popup::context_menu(&resp).style(crate::widgets::menu_style).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                ui.label(crate::i18n::tr("Maker name (…_(1)Name)"));
+                let mut name = app.session.prefs.project.quick_comp_maker.clone();
+                let out = egui::TextEdit::singleline(&mut name).desired_width(140.0).id(field).show(ui);
+                let edit = out.response.clone();
+                if ui.ctx().data_mut(|d| d.remove_temp::<bool>(fresh)).unwrap_or(false) {
+                    edit.request_focus();
+                    let mut st = out.state;
+                    let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()));
+                    st.cursor.set_char_range(Some(all));
+                    st.store(ui.ctx(), field);
+                }
+                app.auto.add("project.erQuickCompMaker", edit.rect, "Maker name");
+                if edit.changed()
+                    && let Err(e) = app.set_pref("project.quickCompMaker", json!(name))
+                {
+                    app.ui.status = e;
+                }
+            });
         }
         x += 26.0;
     }

@@ -19,6 +19,7 @@ pub mod content_fill;
 mod create;
 mod edit;
 mod effect;
+pub(crate) mod er_quick_comp;
 pub use effect::{CryptoCoverage, CryptoProbeJob};
 pub(crate) use effect::{CryptoProbeSlot, crypto_coverage, crypto_probe_job, crypto_probe_ready, keep_crypto_probe, kept_crypto_probe};
 pub mod essential;
@@ -215,6 +216,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(key_transform::specs());
         v.extend(quick_offset::specs());
         v.extend(file_more::specs());
+        v.extend(er_quick_comp::specs());
         v.extend(relink::specs());
         v.extend(relink_moved::specs());
         v.extend(lottie::specs());

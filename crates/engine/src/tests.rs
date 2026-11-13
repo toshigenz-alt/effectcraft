@@ -42,6 +42,7 @@ mod project_items;
 mod proxy;
 mod quick_offset;
 // Local: File ▸ Dependencies ▸ Er Reduce+Collect.
+mod er_quick_comp;
 mod reduce_and_collect;
 mod render_overwrite;
 mod replace_source;

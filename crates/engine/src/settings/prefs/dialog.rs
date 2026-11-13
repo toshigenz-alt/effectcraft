@@ -127,6 +127,8 @@ pub fn pages() -> Vec<Page> {
                 Note(
                     "Every project opened or made shows times as frames, not timecode (Project Settings ▸ Time Display Style). Ctrl+click a time display switches back for that project until it is opened again.",
                 ),
+                s("project.quickCompMaker", "Er Quick Comp Maker", Kind::Text, true),
+                Note("The name at the end of the main comp the Project panel's ⚡ makes (…_(1)Er). Right-click ⚡ to change it there too."),
                 Section("Project Files"),
                 s("project.compactProjectFiles", "Save Compact Project Files", B, true),
                 Note(

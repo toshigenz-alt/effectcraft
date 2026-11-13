@@ -832,3 +832,59 @@ fn dropped_projects_import_into_the_open_one_wherever_they_land() {
     assert_eq!(h.state().session.path.as_deref(), Some(paths[0].to_string_lossy().as_ref()), "the first one opened");
     assert!(now.iter().any(|n| n == "Other B.ecproj") && !now.iter().any(|n| n == "Other A.ecproj"), "{now:?}");
 }
+
+/// Local: a scene's footage dropped on ⚡ (Er Quick Comp, beside Create a new Composition)
+/// becomes a precomp per pass in a main comp named from the file names, and a box says what
+/// was skipped. Right-click ⚡ sets the maker's name at the end of that name.
+#[test]
+fn a_scene_dropped_on_the_bolt_becomes_its_comps_and_right_click_sets_the_maker() {
+    use effectcraft_engine::project::ItemId;
+    let mut s = Session::default();
+    let names = [
+        "Sc_08_All_111326_(1)AMP_RGB_[0001-0018].png",
+        "Sc_08_BG_Lysol_Carried Away_Kitchen+LivingroomV3_111326_(1)PremP_RGB_[0001-0018].png",
+        "Sc_08_BG_Lysol_Carried Away_Kitchen+LivingroomV3_111326_(1)PremP_ZD_[0001-0018].png",
+        "Sc_08_VFX_111326_(1)Er_CrypM_[0001-0018].exr",
+        "Sc_08_VFX_111326_(1)Er_RGB_[0001-0018].png",
+    ];
+    let ids: Vec<u64> = names
+        .iter()
+        .map(|n| {
+            s.execute("file.importPlaceholder", json!({"name": n, "width": 640, "height": 360, "frameRate": 30, "duration": 0.6})).unwrap()["item"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    s.state.project_selection = ids.iter().map(|i| ItemId(*i)).collect();
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(|_| EffectcraftApp::new(s));
+    h.run_steps(3);
+
+    // Right-click ⚡: the name is selected, typing replaces it.
+    let bolt = rect(&h, "project.erQuickComp").center();
+    h.event(Event::PointerMoved(bolt));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: bolt, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(3);
+    assert!(h.state().auto.find("project.erQuickCompMaker").is_some(), "the menu shows the name");
+    h.event(Event::Text("Nok".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().session.prefs.project.quick_comp_maker, "Nok");
+    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+
+    // Drag one of the selected rows onto ⚡: the whole selection goes.
+    let item = rect(&h, &format!("project.item.{}.name", ids[0])).center();
+    drag(&mut h, item, bolt, Modifiers::NONE);
+    let today = chrono::Local::now().format("%m%d%y").to_string();
+    let want = format!("08_EC_Lysol_Carried Away_{today}_(1)Nok");
+    let main = h.state().session.project.items.values().find(|i| i.name == want).unwrap_or_else(|| panic!("no comp {want}")).id;
+    let layers: Vec<String> = h.state().session.project.comp(main).unwrap().layers.iter().map(|l| l.name.clone()).collect();
+    assert_eq!(layers, ["ALL", "VFX", "BG", "ZD"]);
+    assert_eq!(h.state().dialog, Some(effectcraft_ui_egui::Dialog::Info));
+    let (title, body) = h.state_mut().dialog_state_mut().info.clone();
+    assert_eq!(title, "Er Quick Comp");
+    assert!(body.starts_with(&format!("Made {want}\nwith ALL, VFX, BG, ZD.")), "{body}");
+    assert!(body.contains("Not found, skipped: BGPP, BD"), "{body}");
+    assert!(body.contains("Cryptomatte, moved to Ft only:\nSc_08_VFX_111326_(1)Er_CrypM_[0001-0018].exr"), "{body}");
+}

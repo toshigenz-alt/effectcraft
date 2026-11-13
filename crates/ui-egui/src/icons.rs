@@ -83,6 +83,8 @@ pub enum Icon {
     Trash,
     NewFolder,
     NewComp,
+    /// Local: a lightning bolt, the Project panel's Er Quick Comp.
+    Bolt,
     Gear,
     Hamburger,
     ChevronDown,
@@ -549,6 +551,9 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect(2.0, 3.0, 14.0, 13.0);
             pen.line(&[(8.0, 5.5), (8.0, 10.5)]);
             pen.line(&[(5.5, 8.0), (10.5, 8.0)]);
+        }
+        Bolt => {
+            pen.closed(&[(10.0, 1.5), (3.5, 9.0), (7.5, 9.0), (6.0, 14.5), (12.5, 7.0), (8.5, 7.0)]);
         }
         Gear => {
             pen.circle(8.0, 8.0, 2.2);

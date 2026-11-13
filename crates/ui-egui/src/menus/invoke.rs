@@ -215,6 +215,71 @@ pub(super) fn removed_count_text(id: &str, n: u64) -> String {
     format!("{title} removed {what} from the project.")
 }
 
+/// Local: the message of Er Quick Comp's box from the command's result.
+pub(super) fn er_quick_comp_text(v: &Value) -> String {
+    let strs = |k: &str| -> Vec<String> { v[k].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default() };
+    let pre = v["precomps"].as_array().cloned().unwrap_or_default();
+    let passes: Vec<&str> = pre.iter().filter_map(|p| p["name"].as_str()).collect();
+    let mut text = format!(
+        "Made {}
+with {}.",
+        v["name"].as_str().unwrap_or("?"),
+        passes.join(", ")
+    );
+    let mut notes = vec![];
+    for p in &pre {
+        let files = p["files"].as_array().map_or(0, Vec::len);
+        if files > 1 {
+            notes.push(format!("{} got {files} files.", p["name"].as_str().unwrap_or("?")));
+        }
+    }
+    let missing = strs("missing");
+    if !missing.is_empty() {
+        notes.push(format!("Not found, skipped: {}", missing.join(", ")));
+    }
+    if v["sceneFound"] == false {
+        notes.push("No scene number (Sc_08) in the file names: the name says <Scene>, paste over it.".to_string());
+    }
+    if v["projectFound"] == false {
+        notes.push("No product and title after BG_ in a BG file name: the name says <Project>, paste over it.".to_string());
+    }
+    let crypto = strs("crypto");
+    if !crypto.is_empty() {
+        notes.push(format!(
+            "Cryptomatte, moved to Ft only:
+{}",
+            crypto.join(
+                "
+"
+            )
+        ));
+    }
+    let unknown = strs("unknown");
+    if !unknown.is_empty() {
+        notes.push(format!(
+            "Not recognised, left as they were:
+{}",
+            unknown.join(
+                "
+"
+            )
+        ));
+    }
+    if !notes.is_empty() {
+        text.push_str(
+            "
+
+",
+        );
+        text.push_str(&notes.join(
+            "
+
+",
+        ));
+    }
+    text
+}
+
 /// Local: the message of Er Reduce+Collect's box from the command's result.
 pub(super) fn reduce_and_collect_text(v: &Value) -> String {
     let n = v["removed"].as_u64();
@@ -794,6 +859,17 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
             }
             // Local: Er Reduce+Collect runs three steps with no dialog, so one box with OK says
             // what each did, or which step stopped it.
+            // Local: Er Quick Comp (the Project panel's ⚡) says in one box what it made and what it
+            // skipped (passes not found, files it could not place, names it could not read).
+            if id == "file.erQuickComp" {
+                let r = run_engine(app, ctx, id, params.clone());
+                let body = match &r {
+                    Ok(v) => er_quick_comp_text(v),
+                    Err(e) => e.clone(),
+                };
+                crate::panels::forms::info(app, "Er Quick Comp", &body);
+                return r;
+            }
             if id == "file.reduceAndCollect" {
                 let r = run_engine(app, ctx, id, params.clone());
                 let body = match &r {

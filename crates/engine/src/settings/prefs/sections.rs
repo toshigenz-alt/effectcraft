@@ -76,6 +76,9 @@ page!(ProjectPrefs {
     /// it opens or is made (File ▸ New, the untitled project at launch, Close Project). Ctrl+click
     /// a time display still switches it back for that project; Feet + Frames stays.
     time_in_frames: bool = true,
+    /// Local: the maker's name Er Quick Comp (the Project panel's ⚡) puts at the end of the main
+    /// comp's name, `…_(1)<maker>`. Right-click ⚡ to change it.
+    quick_comp_maker: String = "Er".to_string(),
 });
 
 page!(AutoSave {
