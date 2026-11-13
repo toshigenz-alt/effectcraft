@@ -530,6 +530,22 @@ fn item_json(s: &Session, it: &RenderQueueItem, index: usize) -> Value {
     v
 }
 
+/// Local (user's rule): a new Render Queue item whose Output Module is H.264 at 15 Mbps renders
+/// at 40 Mbps, whatever the project's Movie Default says: projects saved before Set as Default
+/// keep the built-in 15 Mbps default, and the user never wants it. Any other format or bitrate
+/// stays as it is. The 15 Mbps template's name follows, so the menu shows the 40 Mbps one.
+fn h264_15_to_40(om: &mut OutputModule) {
+    const FROM: u32 = 15_000;
+    const TO: u32 = 40_000;
+    if om.format != OutputFormat::H264 || om.bitrate_kbps != FROM {
+        return;
+    }
+    om.bitrate_kbps = TO;
+    if om.name == "H.264 - Match Render Settings - 15 Mbps" {
+        om.name = "H.264 - Match Render Settings - 40 Mbps".into();
+    }
+}
+
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let cid = s.comp_for_queue(p)?;
     let mut it = RenderQueueItem::new(0, cid);
@@ -550,6 +566,9 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         object.remove("template");
     }
     apply_output(&mut it.output, &templates, s.state.region_of_interest, &output_params, "renderQueue.add")?;
+    if p.get("bitrate").is_none() {
+        h264_15_to_40(&mut it.output);
+    }
     if str_p(p, "output").or(str_p(p, "path")).is_none() {
         s.avoid_sources(&mut it);
     }

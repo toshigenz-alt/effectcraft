@@ -106,7 +106,10 @@ fn right_click_an_output_module_template_sets_it_as_the_default() {
     let sink: std::sync::Arc<dyn Fn(&str, Vec<u8>) + Send + Sync> = std::sync::Arc::new(|_: &str, _: Vec<u8>| {});
     let mut s = Session { exporter: Some(std::sync::Arc::new(effectcraft_host::FileExporter { sink: Some(sink) })), ..Default::default() };
     s.execute("file.openDemoProject", json!({})).unwrap();
-    s.execute("renderQueue.add", json!({})).unwrap();
+    // Local: a bitrate named on add is kept (Add to Render Queue otherwise makes 15 Mbps 40), so
+    // the item does not start on the 40 Mbps template.
+    s.execute("renderQueue.add", json!({"bitrate": 15000})).unwrap();
+    assert_eq!(s.project.render_queue[0].output.bitrate_kbps, 15_000);
     let id = s.project.render_queue[0].id;
     let mut app = Some(EffectcraftApp::new(s));
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|_| app.take().expect("app"));

@@ -447,6 +447,61 @@ fn set_as_default_output_module_also_applies_to_new_projects() {
     assert_eq!(movie(&next), built_in);
 }
 
+/// Local (user's rule): Add to Render Queue turns an H.264 15 Mbps Output Module into 40 Mbps in
+/// every case — above all a project saved before Set as Default, which keeps the built-in 15 Mbps
+/// default when opened. Any other module, and a bitrate the caller names, stays as it is.
+#[test]
+fn h264_15_mbps_is_added_as_40() {
+    use effectcraft_project::render_templates::{TemplateKind, TemplateSlot};
+    const MBPS15: &str = "H.264 - Match Render Settings - 15 Mbps";
+    const MBPS40: &str = "H.264 - Match Render Settings - 40 Mbps";
+    let d = tmp("h264-15-to-40");
+    let old = d.join("old.ecproj").to_string_lossy().to_string();
+    // A project saved with the built-in default (15 Mbps).
+    let mut s = session_with_comp();
+    assert_eq!(s.project.render_templates.default_name(TemplateKind::OutputModule, TemplateSlot::Movie), MBPS15);
+    s.execute("file.saveAs", json!({"path": old})).unwrap();
+    // Opened where the app-wide default is 40 Mbps: the project keeps its own 15.
+    let store = Arc::new(MemoryConfig::default());
+    let mut s = Session { config: Some(store), ..Default::default() };
+    s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": MBPS40, "app": true})).unwrap();
+    s.execute("file.open", json!({"path": old})).unwrap();
+    assert_eq!(s.project.render_templates.default_name(TemplateKind::OutputModule, TemplateSlot::Movie), MBPS15);
+    let add = |s: &mut Session, p: serde_json::Value| {
+        let a = s.execute("renderQueue.add", p).unwrap();
+        let om = s.project.render_queue.last().unwrap().output.clone();
+        (a["outputModuleSummary"].as_str().unwrap().to_string(), om.bitrate_kbps)
+    };
+    assert_eq!(add(&mut s, json!({})), (MBPS40.to_string(), 40_000));
+    // Exactly the 40 Mbps template (only the output path is the item's own).
+    let mut got = s.project.render_queue.last().unwrap().output.clone();
+    let mut want = s.project.render_templates.output_module(MBPS40).unwrap();
+    got.output.clear();
+    want.output.clear();
+    assert_eq!(got, want);
+    // Another default stays: 5 Mbps H.264, and a non-H.264 module.
+    for (name, kbps) in [("H.264 - Match Render Settings - 5 Mbps", 5_000), ("Lossless", 0)] {
+        s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": name})).unwrap();
+        let (summary, bitrate) = add(&mut s, json!({}));
+        assert_eq!(summary, name);
+        if kbps > 0 {
+            assert_eq!(bitrate, kbps);
+        }
+    }
+    // An H.264 module edited to 15 Mbps by hand (Custom) is raised too, keeping its name.
+    s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": MBPS40})).unwrap();
+    let a = s.execute("renderQueue.add", json!({})).unwrap();
+    s.execute("renderQueue.setOutputModule", json!({"item": a["item"], "bitrate": 15000})).unwrap();
+    s.execute("renderQueue.saveTemplate", json!({"kind": "outputModule", "item": a["item"], "name": "Mine 15"})).unwrap();
+    s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": "Mine 15"})).unwrap();
+    assert_eq!(add(&mut s, json!({})), ("Mine 15".to_string(), 40_000));
+    // A bitrate the caller names is kept.
+    s.execute_checked("renderQueue.setTemplateDefault", json!({"kind": "outputModule", "slot": "movie", "name": MBPS15})).unwrap();
+    assert_eq!(add(&mut s, json!({"bitrate": 15000})).1, 15_000);
+    // Items already in the queue are not touched by adding another.
+    assert_eq!(s.project.render_queue.last().unwrap().output.bitrate_kbps, 15_000);
+}
+
 #[test]
 fn project_files_are_indented_unless_compact_is_on() {
     let d = tmp("compact-project-files");

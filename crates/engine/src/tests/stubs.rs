@@ -373,7 +373,8 @@ fn templates_save_apply_default_and_persist() {
     // A new item starts from the Movie defaults.
     let a = s.execute("renderQueue.add", json!({"output": "/tmp/t/a.mp4"})).unwrap();
     assert_eq!(a["renderSettingsSummary"], "Best Settings");
-    assert_eq!(a["outputModuleSummary"], "H.264 - Match Render Settings - 15 Mbps");
+    // Local: the built-in 15 Mbps default is added as 40 Mbps (`settings::h264_15_mbps_is_added_as_40`).
+    assert_eq!(a["outputModuleSummary"], "H.264 - Match Render Settings - 40 Mbps");
     // Edit it: Custom; save templates from it; make them the defaults.
     let r = s
         .execute(
