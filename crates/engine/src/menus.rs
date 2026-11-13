@@ -601,6 +601,8 @@ File
   New Comp from Selection... | file.newCompFromSelection
   ---
   Dependencies
+    Er Reduce+Collect | file.reduceAndCollect
+    ---
     Collect Files... | file.collectFiles
     Consolidate All Footage | file.consolidateFootage
     Remove Unused Footage | file.removeUnusedFootage

@@ -215,6 +215,32 @@ pub(super) fn removed_count_text(id: &str, n: u64) -> String {
     format!("{title} removed {what} from the project.")
 }
 
+/// Local: the message of Er Reduce+Collect's box from the command's result.
+pub(super) fn reduce_and_collect_text(v: &Value) -> String {
+    let n = v["removed"].as_u64();
+    let removed = match n {
+        Some(1) => "Reduce Project removed 1 item.".to_string(),
+        Some(n) => format!("Reduce Project removed {n} items."),
+        None => "Reduce Project ran.".to_string(),
+    };
+    let saved = v["saved"].as_str().unwrap_or("?");
+    let folder = v["folder"].as_str().unwrap_or("?");
+    let copied = v["copied"].as_u64().map_or_else(|| "?".to_string(), |c| c.to_string());
+    let mut text = format!("{removed}\nSaved {saved}\nCollected {copied} file(s) into {folder}");
+    let errors: Vec<&str> = v["errors"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if !errors.is_empty() {
+        const SHOWN: usize = 10;
+        text.push_str(&format!("\n\n{} file(s) could not be copied:", errors.len()));
+        for e in errors.iter().take(SHOWN) {
+            text.push_str(&format!("\n{e}"));
+        }
+        if errors.len() > SHOWN {
+            text.push_str(&format!("\n… and {} more", errors.len() - SHOWN));
+        }
+    }
+    text
+}
+
 pub(super) fn no_params(p: &Value) -> bool {
     p.as_object().is_none_or(|m| m.is_empty())
 }
@@ -764,6 +790,17 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                     crate::panels::effect_controls::reveal_applied(app, &params);
                     crate::panels::effect_controls::choose_files_after_apply(app, applied);
                 }
+                return r;
+            }
+            // Local: Er Reduce+Collect runs three steps with no dialog, so one box with OK says
+            // what each did, or which step stopped it.
+            if id == "file.reduceAndCollect" {
+                let r = run_engine(app, ctx, id, params.clone());
+                let body = match &r {
+                    Ok(v) => reduce_and_collect_text(v),
+                    Err(e) => e.clone(),
+                };
+                crate::panels::forms::info(app, "Er Reduce+Collect", &body);
                 return r;
             }
             // Local: Reduce Project, Remove Unused Footage and Consolidate All Footage say how many

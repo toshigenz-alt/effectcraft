@@ -669,6 +669,40 @@ fn dependencies_commands_report_the_removed_count_in_a_box() {
     assert_eq!(super::invoke::removed_count_text("file.consolidateFootage", 1), "Consolidate All Footage removed 1 item (duplicate footage) from the project.");
 }
 
+/// Local: File ▸ Dependencies ▸ Er Reduce+Collect is the first row of the submenu, runs with no
+/// dialog and says in one box what each step did, or which step stopped it.
+#[test]
+fn er_reduce_collect_is_first_in_dependencies_and_reports_in_a_box() {
+    let first = effectcraft_engine::menus::entries().into_iter().find(|(path, _)| path == &["File", "Dependencies"]).map(|(_, e)| e.command.clone());
+    assert_eq!(first.as_deref(), Some("file.reduceAndCollect"));
+    let dir = std::env::temp_dir().join(format!("ec-reduce-collect-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = EffectcraftApp::new(effectcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let a = app.session.execute("comp.new", json!({"name": "A", "width": 64, "height": 36, "frameRate": 30, "duration": 1})).unwrap();
+    app.session.execute("comp.new", json!({"name": "B", "width": 64, "height": 36, "frameRate": 30, "duration": 1})).unwrap();
+    app.session.execute("project.select", json!({"items": [a["comp"]]})).unwrap();
+    // Unsaved: the box says why, and nothing is removed.
+    assert!(invoke(&mut app, &ctx, "file.reduceAndCollect", json!({})).is_err());
+    assert_eq!(app.dialog, Some(crate::Dialog::Info));
+    assert!(app.dialog_state.info.1.contains("save the project first"), "{:?}", app.dialog_state.info);
+    assert_eq!(app.session.project.items.len(), 2);
+    app.dialog = None;
+    let path = dir.join("Shot 010.ecproj").to_string_lossy().to_string();
+    app.session.execute("file.saveAs", json!({"path": path})).unwrap();
+    // No file dialog is asked for.
+    app.hooks.pick_save_file = Some(Box::new(|name: &str, _: &str| panic!("asked for {name}")));
+    invoke(&mut app, &ctx, "file.reduceAndCollect", json!({})).unwrap();
+    let folder = dir.join("Shot 010").to_string_lossy().to_string();
+    assert_eq!(
+        app.dialog_state.info,
+        ("Er Reduce+Collect".to_string(), format!("Reduce Project removed 1 item.\nSaved {path}\nCollected 0 file(s) into {folder}"))
+    );
+    assert!(dir.join("Shot 010").join("Shot 010.ecproj").is_file());
+    assert_eq!(super::invoke::reduce_and_collect_text(&json!({"removed": 0, "errors": ["a: gone", "b: gone"]})).lines().last(), Some("b: gone"));
+}
+
 /// Local: in the Project panel Cmd+Alt+C (Ctrl+Alt+C) is Remember Interpretation and Cmd+Alt+V
 /// Apply Interpretation, onto every selected footage item (comps skipped) in one undo step.
 /// Elsewhere Cmd+Alt+C stays Copy with Property Links.

@@ -134,7 +134,8 @@ const WRITES: &[(&str, &[&str])] = &[
 ];
 
 /// Commands that write where they are not told: the project's file, the Render Queue's outputs.
-const IMPLICIT_WRITES: &[&str] = &["file.save", "file.incrementAndSave", "renderQueue.render", "render.preRender"];
+/// Local: Er Reduce+Collect writes the project's file and a folder beside it.
+const IMPLICIT_WRITES: &[&str] = &["file.save", "file.incrementAndSave", "file.reduceAndCollect", "renderQueue.render", "render.preRender"];
 
 /// Commands that queue a render, whose output defaults to the project's folder when not given.
 const QUEUES_AN_OUTPUT: &[&str] = &["renderQueue.add", "render.preRender", "file.createProxy"];
@@ -276,7 +277,11 @@ impl Confinement {
             lookups.push(Lookup::QueueDefault);
         }
         if IMPLICIT_WRITES.contains(&id) && !(given && id == "file.save") {
-            lookups.push(if id == "file.save" || id == "file.incrementAndSave" { Lookup::ProjectFile } else { Lookup::RenderOutputs });
+            lookups.push(if matches!(id, "file.save" | "file.incrementAndSave" | "file.reduceAndCollect") {
+                Lookup::ProjectFile
+            } else {
+                Lookup::RenderOutputs
+            });
         }
         Ok(lookups)
     }

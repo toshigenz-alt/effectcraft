@@ -561,10 +561,9 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled Project".into());
         path.with_file_name(format!("{stem}{suffix}.{ext}")).to_string_lossy().into_owned().into()
     };
+    // The same folder Er Reduce+Collect collects into (`doc_path::collect_folder_for`).
     let collect_as = || -> std::borrow::Cow<'static, str> {
-        let Some(path) = app.session.path.as_deref().map(std::path::Path::new) else { return "Collected Files".into() };
-        let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { return "Collected Files".into() };
-        path.with_file_name(stem).to_string_lossy().into_owned().into()
+        app.session.path.as_deref().and_then(effectcraft_engine::doc_path::collect_folder_for).map_or("Collected Files".into(), Into::into)
     };
     let (key, ask) = match id {
         "file.import" | "file.importMultiple" => ("paths", Ask::Import),

@@ -99,7 +99,7 @@ pub(crate) fn file_text(s: &Session, path: &str) -> Result<String> {
     if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other) } else { Ok(json) }
 }
 
-fn save_to(s: &mut Session, path: &str) -> Result<Value> {
+pub(super) fn save_to(s: &mut Session, path: &str) -> Result<Value> {
     let json = file_text(s, path)?;
     s.services.write_file(path, json.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {path}: {e}")))?;
     s.path = Some(path.to_string());

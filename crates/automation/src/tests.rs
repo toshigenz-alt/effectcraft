@@ -1456,6 +1456,11 @@ fn automation_roots_confine_file_access() {
     call_json(&mut s, "open_project", json!({"path": p(&read, "source.ecproj")}));
     denied(&mut s, "save_project", json!({}));
     denied(&mut s, "execute_command", json!({"command": "file.incrementAndSave"}));
+    // Local: Er Reduce+Collect writes the project's file and a folder beside it (a comp is
+    // selected, so only the confinement refuses it).
+    call_json(&mut s, "execute_command", json!({"command": "project.select", "params": {"items": ["A"]}}));
+    let msg = denied(&mut s, "execute_command", json!({"command": "file.reduceAndCollect"}));
+    assert!(msg.contains("cannot write"), "{msg}");
     // Rendering the queue writes its items' outputs (by default beside the project).
     call_json(&mut s, "execute_command", json!({"command": "renderQueue.add", "params": {"comp": "A"}}));
     let queue = call_json(&mut s, "execute_command", json!({"command": "renderQueue.list"}));

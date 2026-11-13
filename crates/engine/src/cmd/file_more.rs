@@ -371,6 +371,35 @@ fn reduce(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"removed": n}))
 }
 
+fn has_comp_selection_and_file(s: &Session) -> std::result::Result<(), String> {
+    has_comp_selection(s)?;
+    if s.path.is_none() { Err("save the project first: it collects into a folder named after its file".into()) } else { Ok(()) }
+}
+
+/// Local (user's own workflow): File ▸ Dependencies ▸ Er Reduce+Collect. Reduce Project to the
+/// selected comps, Save over the project's file, then Collect Files into the folder the Collect
+/// Files dialog offers (beside the file, named after it), with no dialog: the project was already
+/// saved where and as it should be. Stops at the first step that fails; the steps before it stay
+/// done (Reduce is one undo step).
+fn reduce_and_collect(s: &mut Session, _: &Value) -> Result<Value> {
+    let path = s.path.clone().ok_or_else(|| bad("file.reduceAndCollect", "save the project first"))?;
+    let folder = crate::doc_path::collect_folder_for(&path).ok_or_else(|| bad("file.reduceAndCollect", format!("no file name in {path}")))?;
+    let step = |what: &str, done: &str| {
+        let (what, done) = (what.to_string(), done.to_string());
+        move |e: EngineError| EngineError::Other(format!("{what} failed{done}: {e}"))
+    };
+    let removed = reduce(s, &json!({})).map_err(step("Reduce Project", ""))?["removed"].clone();
+    let saved = super::file::save_to(s, &path).map_err(step("Save", " (the project was reduced, not saved)"))?;
+    let mut collected = collect_files(s, &json!({"folder": folder})).map_err(step("Collect Files", " (the project was reduced and saved)"))?;
+    s.toast(format!("Reduced, saved and collected into {folder}"));
+    if let Some(m) = collected.as_object_mut() {
+        m.insert("removed".into(), removed);
+        m.insert("saved".into(), saved["path"].clone());
+        m.insert("folder".into(), json!(folder));
+    }
+    Ok(collected)
+}
+
 fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
     let what = str_p(p, "what").unwrap_or("footage");
     match what {
@@ -1276,6 +1305,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{duration? (s, for stills), single?: bool (one comp for all), dimensionsFrom?: index, sequence?: bool, overlap?: bool, overlapDuration? (s), transition?: off|dissolveFront|crossDissolve, addToRenderQueue?: bool, autoCryptomatte?: bool (local: an EXR named *cryp* gets Cryptomatte, Display = Colors, as layer.addItem; the Project panel's drop on Create a new Composition)} → {comps}",
             has_project_selection,
             new_comp_from_selection
+        ),
+        cmd!(
+            "file.reduceAndCollect",
+            "Er Reduce+Collect",
+            ["File", "Dependencies"],
+            None,
+            "{} (local: Reduce Project to the selected comps, Save, then Collect Files into the folder beside the project file named after it, no dialog) → {removed, saved, folder, project, copied, errors}",
+            has_comp_selection_and_file,
+            reduce_and_collect
         ),
         cmd!("file.collectFiles", "Collect Files...", ["File", "Dependencies"], None, "{folder}", has_items, collect_files),
         cmd!("file.consolidateFootage", "Consolidate All Footage", ["File", "Dependencies"], None, "{}", has_items, consolidate),

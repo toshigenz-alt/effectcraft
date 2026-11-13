@@ -165,6 +165,15 @@ pub(crate) fn resolve_footage_of(p: &mut Project, pick: impl Fn(ItemId) -> bool,
 /// Local: the folder Collect Files puts footage in, beside the collected project.
 const COLLECTED: &str = "(Footage)";
 
+/// Local: the folder Collect Files offers for the project saved at `project`: beside it, named
+/// after its file (`D:/Jobs/Intro v1.2.ecproj` → `D:/Jobs/Intro v1.2`). The Collect Files dialog
+/// starts from it and Er Reduce+Collect collects into it. `None` when `project` names no file.
+pub fn collect_folder_for(project: &str) -> Option<String> {
+    let path = Path::new(project);
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    Some(path.with_file_name(stem).to_string_lossy().into_owned())
+}
+
 /// Local: where footage stored at `stored` is now, when the Collect Files folder it was collected
 /// into has been moved to `document_dir`: the part of `stored` from its last `(Footage)` folder on,
 /// beside the document, else the file name alone beside the document. Both `/` and `\` separate.

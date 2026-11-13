@@ -41,6 +41,8 @@ mod panels;
 mod project_items;
 mod proxy;
 mod quick_offset;
+// Local: File ▸ Dependencies ▸ Er Reduce+Collect.
+mod reduce_and_collect;
 mod render_overwrite;
 mod replace_source;
 mod rig3d;
